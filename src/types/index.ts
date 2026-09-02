@@ -3,10 +3,11 @@
  * These mirror BLUEPRINT.md §2.2 (data flow), §3.2 (LuxyIntent), §6 (agents).
  */
 
-export type AgentName = 'meme' | 'perps' | 'lp' | 'narrative';
-export type Chain = 'solana' | 'base' | 'ethereum' | 'hyperliquid';
+export type AgentName = 'meme' | 'perps' | 'lp' | 'narrative' | 'polymarket';
+export type Chain = 'solana' | 'base' | 'ethereum' | 'hyperliquid' | 'robinhood';
 export type IntentAction = 'entry' | 'exit' | 'hold' | 'alert';
 export type LlmVerdict = 'strong' | 'moderate' | 'weak' | 'skip';
+export type OrderType = 'gtc' | 'gtd' | 'fok';
 
 /** Backtest metrics produced by the E2B sandbox or the local TS fallback. */
 export interface BacktestResult {
@@ -92,6 +93,21 @@ export interface PoolCandidate {
   score: number;
 }
 
+/** Polymarket prediction-market signal (BLUEPRINT.md §9.4 / Phase 3). */
+export interface PolymarketSignal {
+  conditionId: string;
+  slug: string;
+  question: string;
+  outcome: string;                 // outcome token to buy, e.g. "Yes"
+  outcomeIndex: 0 | 1;
+  marketPrice: number;             // current CLOB midpoint 0..1
+  modelProbability: number;        // LLM-estimated probability 0..1
+  edge: number;                    // modelProbability - marketPrice (signed)
+  liquidityUsd: number;
+  endDate: string;
+  score: number;
+}
+
 /** Perps market classification (BLUEPRINT.md §6.4). */
 export interface PerpsSignal {
   market: string;
@@ -118,5 +134,16 @@ export interface PortfolioState {
 /** Notification queue payload (all agents → telegram-bot). */
 export interface NotificationJob {
   text: string;
-  type: 'signal' | 'entry' | 'exit' | 'alert' | 'lp' | 'hype' | 'info';
+  type: 'signal' | 'entry' | 'exit' | 'alert' | 'lp' | 'hype' | 'info' | 'strategy' | 'polymarket';
+}
+
+/** Strategy proposal lifecycle (BLUEPRINT.md §5.3). */
+export interface StrategyProposal {
+  id: number;
+  agent: AgentName;
+  version: number;
+  params: Record<string, unknown>;
+  rationale: string;
+  createdBy: 'luxy' | 'user';
+  createdAt: string;
 }

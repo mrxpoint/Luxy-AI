@@ -59,6 +59,32 @@ const envSchema = z.object({
   HYPERLIQUID_WALLET_ADDRESS: z.string().default(''),
   HYPERLIQUID_PRIVATE_KEY: z.string().default(''),
 
+  // EVM (Phase 3 — Base / Ethereum)
+  BASE_RPC_URL: z.string().default('https://mainnet.base.org'),
+  ETHEREUM_RPC_URL: z.string().default('https://eth.llamarpc.com'),
+  EVM_EXECUTOR_PRIVATE_KEY: z.string().default(''),
+  UNISWAP_SUBGRAPH_ETH: z
+    .string()
+    .default('https://api.thegraph.com/subgraphs/name/uniswap/uniswap-v3'),
+  LP_EVM_ENABLED: booleanish,
+  EVM_GAS_COST_CEIL_USD: num(1.5),
+
+  // Polymarket (Phase 3 — CLOB on Polygon)
+  POLYMARKET_GAMMA_API: z.string().default('https://gamma-api.polymarket.com'),
+  POLYMARKET_CLOB_API: z.string().default('https://clob.polymarket.com'),
+  POLYMARKET_PRIVATE_KEY: z.string().default(''),
+  POLYMARKET_FUNDER_ADDRESS: z.string().default(''),
+  POLYMARKET_MIN_EDGE: num(0.08),
+
+  // Robinhood Crypto (Phase 3 — US crypto markets)
+  ROBINHOOD_API_BASE: z.string().default('https://trading.robinhood.com'),
+  ROBINHOOD_API_KEY: z.string().default(''),
+  ROBINHOOD_PRIVATE_KEY_B64: z.string().default(''),
+
+  // TimescaleDB candle ingest (Phase 4)
+  CANDLES_INTERVAL_MIN: num(5),
+  CANDLES_BACKFILL_HOURS: num(48),
+
   // Telegram
   TELEGRAM_BOT_TOKEN: z.string().default(''),
   TELEGRAM_CHAT_ID: z.string().default(''),
@@ -82,6 +108,8 @@ const envSchema = z.object({
   LP_HUNTER_INTERVAL_MIN: num(30),
   LP_HEALER_INTERVAL_MIN: num(10),
   NARRATIVE_INTERVAL_MIN: num(20),
+  POLYMARKET_INTERVAL_MIN: num(30),
+  STRATEGY_TUNE_INTERVAL_MIN: num(60),
 });
 
 export type AppConfig = z.infer<typeof envSchema>;

@@ -84,6 +84,14 @@ CREATE TABLE IF NOT EXISTS strategy_config (
   UNIQUE (agent, version)
 );
 
+-- Self-tuning lifecycle (BLUEPRINT.md §5.3): Luxy proposes → user approves.
+-- 'pending' rows are proposals awaiting /approve; they never gate execution.
+ALTER TABLE strategy_config ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'approved';
+ALTER TABLE strategy_config ADD COLUMN IF NOT EXISTS rationale TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_strategy_pending
+  ON strategy_config (agent, created_at DESC) WHERE status = 'pending';
+
 -- ------------------------------------------------------------
 -- audit_log — immutable action log (no DELETE permission for app user)
 -- ------------------------------------------------------------
@@ -138,8 +146,50 @@ CREATE INDEX IF NOT EXISTS idx_lp_lessons_pool
 CREATE TABLE IF NOT EXISTS backtest_runs (
   id           BIGSERIAL PRIMARY KEY,
   signal_id    BIGINT REFERENCES signals (id),
-  engine       TEXT NOT NULL DEFAULT 'local-ts', -- 'e2b' | 'local-ts'
+  engine       TEXT NOT NULL DEFAULT 'local-ts', -- 'e2b' | 'local-ts' | 'replay'
   params       JSONB NOT NULL,
   result       JSONB NOT NULL,
   created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ------------------------------------------------------------
+-- candles — OHLCV time-series (Phase 4, BLUEPRINT.md §8.1)
+-- Plain PostgreSQL table by default; converted to a TimescaleDB
+-- hypertable automatically when the extension is available.
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS candles (
+  chain     TEXT   NOT NULL,                   -- 'solana' | 'base' | 'ethereum' | 'hyperliquid'
+  token     TEXT   NOT NULL,                   -- mint / address / market symbol
+  timeframe TEXT   NOT NULL DEFAULT '1h',      -- '1m' | '5m' | '1h' | '1d'
+  ts        TIMESTAMPTZ NOT NULL,              -- candle open time
+  o DOUBLE PRECISION NOT NULL,
+  h DOUBLE PRECISION NOT NULL,
+  l DOUBLE PRECISION NOT NULL,
+  c DOUBLE PRECISION NOT NULL,
+  v DOUBLE PRECISION NOT NULL DEFAULT 0,
+  UNIQUE (chain, token, timeframe, ts)
+);
+
+CREATE INDEX IF NOT EXISTS idx_candles_lookup
+  ON candles (chain, token, timeframe, ts DESC);
+
+-- Convert to hypertable when TimescaleDB is installed (no-op otherwise).
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'timescaledb') THEN
+    PERFORM create_hypertable('candles', 'ts', if_not_exists => TRUE, migrate_data => TRUE);
+  END IF;
+END
+$$;
+
+-- ------------------------------------------------------------
+-- model_evals — fine-tuning evaluation results (Phase 4, BLUEPRINT.md §8.1)
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS model_evals (
+  id              BIGSERIAL PRIMARY KEY,
+  model           TEXT NOT NULL,               -- model name / checkpoint
+  dataset_version TEXT NOT NULL,               -- exported dataset label
+  metrics         JSONB NOT NULL,              -- schema adherence, decision quality, hallucination rate
+  notes           TEXT,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

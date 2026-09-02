@@ -59,6 +59,22 @@ module.exports = {
       time: true,
     },
     {
+      name: 'luxy-polymarket',
+      script: 'tsx',
+      args: 'src/agents/polymarket/index.ts',
+      max_memory_restart: '256M',
+      env: { NODE_ENV: 'production' },
+      time: true,
+    },
+    {
+      name: 'luxy-candles',
+      script: 'tsx',
+      args: 'src/market/ingest.ts',
+      max_memory_restart: '256M',
+      env: { NODE_ENV: 'production' },
+      time: true,
+    },
+    {
       name: 'luxy-telegram',
       script: 'tsx',
       args: 'src/telegram/index.ts',
