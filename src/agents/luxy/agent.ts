@@ -20,6 +20,7 @@ import {
 } from '../../llm/prompts/luxy-system.js';
 import { fetchOhlcv, birdeyeConfigured } from '../../screener/birdeye.js';
 import { runMomentumBacktest } from '../../e2b/backtest.js';
+import { preflightAnalysis } from '../../e2b/analysis.js';
 import { LuxySandbox } from '../../e2b/sandbox.js';
 import { logger } from '../../utils/logger.js';
 import { config } from '../../config/index.js';
@@ -141,6 +142,16 @@ export async function evaluateCandidate(candidate: ScoredCandidate): Promise<Lux
   if (backtest) baseIntent.backtest = backtest;
   await recordBacktest(candidate.token, engine, backtest);
 
+  // Preflight: Kelly sizing + liquidity depth (BLUEPRINT §4.6 steps 3-4).
+  const preflight = backtest
+    ? preflightAnalysis({
+        backtest,
+        portfolioUsd: config.PAPER_PORTFOLIO_USD,
+        entryUsd: Math.min(config.PAPER_PORTFOLIO_USD * config.RISK_MAX_POSITION_PCT, candidate.liquidityUsd * 0.01),
+        liquidityUsd: candidate.liquidityUsd,
+      })
+    : null;
+
   const lessons = await getHivemindLessons();
   const state = await portfolioSummary();
 
@@ -165,6 +176,7 @@ export async function evaluateCandidate(candidate: ScoredCandidate): Promise<Lux
       2,
     ),
     backtestJson: backtest ? JSON.stringify(backtest, null, 2) : null,
+    preflightJson: preflight ? JSON.stringify(preflight, null, 2) : null,
     hivemindLessons: lessons,
     openPositions: state.openPositions,
     dailyDrawdownPct: state.dailyDrawdownPct,

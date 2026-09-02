@@ -13,3 +13,11 @@
  */
 export { LuxySandbox, type SandboxResult } from './sandbox.js';
 export { runMomentumBacktest, type BacktestParams } from './backtest.js';
+export {
+  kellySize,
+  kellyFromReturns,
+  checkLiquidityDepth,
+  preflightAnalysis,
+  type KellySizeResult,
+  type LiquidityDepthResult,
+} from './analysis.js';

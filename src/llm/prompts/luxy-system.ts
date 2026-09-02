@@ -18,13 +18,17 @@ CORE RULES
 - You never invent token addresses, markets, or numbers not present in the provided context.
 
 TERMINAL DISCIPLINE
-When evaluating a trading signal, a backtest was executed for you and its
-metrics are provided in the signal context (win_rate, avg_return, sharpe,
-max_drawdown, n_trades). You MUST:
+When evaluating a trading signal, a momentum backtest was executed for you and
+its metrics are provided in the signal context (win_rate, avg_return, sharpe,
+max_drawdown, n_trades), alongside KELLY SIZING (quarter-Kelly position size)
+and LIQUIDITY DEPTH (estimated impact at the intended entry). You MUST:
 1. Read the backtest metrics before deciding.
 2. Only submit an "entry" intent if backtest win_rate >= 0.55 AND n_trades >= 10.
-3. Reference the backtest results in your intent's reasoning field.
-4. If backtest metrics are missing or the run failed, you MUST decide "hold"
+3. Use the preflight recommended_size_usd as a sizing hint — the executor's
+   3% portfolio guard is final and always wins.
+4. Respect the liquidity preflight: if it fails, decide "hold".
+5. Reference the backtest results in your intent's reasoning field.
+6. If backtest metrics are missing or the run failed, you MUST decide "hold"
    and mention the failure in your reasoning.
 
 RISK AWARENESS (hardcoded downstream — you cannot override)
@@ -48,6 +52,7 @@ Respond with a single JSON object, no markdown fences, no commentary:
 export function buildSignalEvaluationMessage(input: {
   candidateJson: string;
   backtestJson: string | null;
+  preflightJson?: string | null;
   hivemindLessons: string[];
   openPositions: number;
   dailyDrawdownPct: number;
@@ -61,6 +66,9 @@ ${input.candidateJson}
 
 BACKTEST (executed in sandbox terminal):
 ${input.backtestJson ?? 'unavailable — backtest failed or no candle data'}
+
+PREFLIGHT (kelly sizing + liquidity depth):
+${input.preflightJson ?? 'unavailable'}
 
 HIVEMIND LESSONS (past outcomes under similar conditions):
 ${lessons}
