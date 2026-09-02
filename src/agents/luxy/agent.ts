@@ -115,13 +115,38 @@ else:
 /** Cache backtest for the future fine-tuning dataset (BLUEPRINT §11). */
 async function recordBacktest(signalToken: string, engine: string, result: BacktestResult | null): Promise<void> {
   try {
+    const version = await activeStrategyVersion('meme');
     await query(
       `INSERT INTO backtest_runs (signal_id, engine, params, result)
        VALUES ((SELECT id FROM signals WHERE token = $1 ORDER BY created_at DESC LIMIT 1), $2, $3, $4)`,
-      [signalToken, engine, JSON.stringify({ strategy: 'momentum', sma: 12, mom: 6, thr: 0.03 }), JSON.stringify(result)],
+      [
+        signalToken,
+        engine,
+        JSON.stringify({
+          strategy: 'momentum',
+          sma: 12,
+          mom: 6,
+          thr: 0.03,
+          agent: 'meme',
+          strategy_version: version,
+        }),
+        JSON.stringify(result),
+      ],
     );
   } catch {
     // backtest caching is best-effort
+  }
+}
+
+async function activeStrategyVersion(agent: string): Promise<number> {
+  try {
+    const res = await query<{ version: number }>(
+      `SELECT version FROM strategy_config WHERE agent = $1 AND active = TRUE ORDER BY version DESC LIMIT 1`,
+      [agent],
+    );
+    return res.rows[0]?.version ?? 1;
+  } catch {
+    return 1;
   }
 }
 

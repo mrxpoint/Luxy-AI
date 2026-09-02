@@ -14,8 +14,7 @@ function pool(): Pool {
   if (!globalForPg.luxyPool) {
     globalForPg.luxyPool = new Pool({
       connectionString:
-        process.env.DATABASE_URL ??
-        'postgresql://luxy:luxy_dev_password@localhost:5432/luxydb',
+        process.env.DATABASE_URL ?? 'postgresql://luxy:luxy_dev_password@localhost:5432/luxydb',
       max: 5,
       connectionTimeoutMillis: 3_000,
     });
@@ -58,7 +57,20 @@ export interface StrategyRow {
   params: Record<string, unknown>;
   created_by: string;
   active: boolean;
+  status: string;
+  rationale: string | null;
   created_at: string;
+}
+
+export interface EvaluationRow {
+  agent: string;
+  version: number;
+  runs: number;
+  avg_win_rate: number;
+  avg_sharpe: number;
+  avg_max_drawdown: number;
+  total_trades: number;
+  last_run: string;
 }
 
 export interface DashboardData {
@@ -122,7 +134,10 @@ export async function getDashboard(): Promise<DashboardData> {
   };
 }
 
-export async function getSignals(limit = 50, offset = 0): Promise<{ offline: boolean; rows: SignalRow[] }> {
+export async function getSignals(
+  limit = 50,
+  offset = 0,
+): Promise<{ offline: boolean; rows: SignalRow[] }> {
   const rows = await q<SignalRow>(
     `SELECT id, source, agent, chain, symbol, score, llm_verdict, created_at
      FROM signals ORDER BY created_at DESC LIMIT $1 OFFSET $2`,
@@ -145,10 +160,72 @@ export async function getPositions(limit = 50): Promise<{ offline: boolean; rows
 
 export async function getStrategy(): Promise<{ offline: boolean; rows: StrategyRow[] }> {
   const rows = await q<StrategyRow>(
-    `SELECT id, agent, version, params, created_by, active, created_at
+    `SELECT id, agent, version, params, created_by, active, status, rationale, created_at
      FROM strategy_config ORDER BY agent, version DESC`,
   );
   if (!rows || rows.length === 0) return { offline: true, rows: demoStrategy() };
+  return { offline: false, rows };
+}
+
+export interface ProposalRow extends StrategyRow {}
+
+export async function getProposals(): Promise<{ offline: boolean; rows: ProposalRow[] }> {
+  const rows = await q<StrategyRow>(
+    `SELECT id, agent, version, params, created_by, active, status, rationale, created_at
+     FROM strategy_config WHERE status = 'pending' ORDER BY created_at DESC LIMIT 20`,
+  );
+  if (!rows) return { offline: true, rows: [] };
+  return { offline: false, rows };
+}
+
+export async function decideProposal(
+  id: number,
+  decision: 'approve' | 'reject',
+): Promise<{ ok: boolean; message: string }> {
+  const rows = await q<{ agent: string; version: number; status: string }>(
+    `SELECT agent, version, status FROM strategy_config WHERE id = $1`,
+    [id],
+  );
+  const row = rows?.[0];
+  if (!row) return { ok: false, message: `proposal #${id} not found` };
+  if (row.status !== 'pending') return { ok: false, message: `proposal #${id} is not pending` };
+
+  if (decision === 'approve') {
+    await q(`UPDATE strategy_config SET active = FALSE WHERE agent = $1 AND active = TRUE`, [
+      row.agent,
+    ]);
+    await q(`UPDATE strategy_config SET active = TRUE, status = 'approved' WHERE id = $1`, [id]);
+    await q(
+      `INSERT INTO audit_log (actor, action, payload) VALUES ('user', 'strategy_approved', $1)`,
+      [JSON.stringify({ id, agent: row.agent, version: row.version, via: 'web' })],
+    );
+    return { ok: true, message: `approved ${row.agent} v${row.version}` };
+  }
+  await q(`UPDATE strategy_config SET status = 'rejected', active = FALSE WHERE id = $1`, [id]);
+  await q(
+    `INSERT INTO audit_log (actor, action, payload) VALUES ('user', 'strategy_rejected', $1)`,
+    [JSON.stringify({ id, agent: row.agent, version: row.version, via: 'web' })],
+  );
+  return { ok: true, message: `rejected ${row.agent} v${row.version}` };
+}
+
+export async function getEvaluation(): Promise<{ offline: boolean; rows: EvaluationRow[] }> {
+  const rows = await q<EvaluationRow>(
+    `SELECT sc.agent,
+            sc.version,
+            COUNT(br.id)::int AS runs,
+            COALESCE(AVG((br.result->>'win_rate')::float), 0)::float AS avg_win_rate,
+            COALESCE(AVG((br.result->>'sharpe')::float), 0)::float AS avg_sharpe,
+            COALESCE(AVG((br.result->>'max_drawdown')::float), 0)::float AS avg_max_drawdown,
+            COALESCE(SUM((br.result->>'n_trades')::int), 0)::int AS total_trades,
+            COALESCE(MAX(br.created_at), sc.created_at) AS last_run
+     FROM strategy_config sc
+     LEFT JOIN backtest_runs br
+       ON br.params->>'agent' = sc.agent AND br.params->>'strategy_version' = sc.version::text
+     GROUP BY sc.agent, sc.version, sc.created_at
+     ORDER BY sc.agent, sc.version DESC`,
+  );
+  if (!rows || rows.length === 0) return { offline: true, rows: demoEvaluation() };
   return { offline: false, rows };
 }
 
@@ -162,13 +239,55 @@ function iso(minAgo: number): string {
 
 function demoSignals(n: number): SignalRow[] {
   const base = [
-    { symbol: 'WIF', source: 'screener', agent: 'meme', chain: 'solana', score: 0.82, verdict: 'strong' },
-    { symbol: 'BONK', source: 'screener', agent: 'meme', chain: 'solana', score: 0.71, verdict: 'moderate' },
-    { symbol: 'WIF', source: 'narrative', agent: 'narrative', chain: 'solana', score: 0.79, verdict: 'strong' },
-    { symbol: 'POPCAT', source: 'screener', agent: 'meme', chain: 'solana', score: 0.63, verdict: 'moderate' },
-    { symbol: 'SOL', source: 'perps', agent: 'perps', chain: 'hyperliquid', score: 0.74, verdict: null },
+    {
+      symbol: 'WIF',
+      source: 'screener',
+      agent: 'meme',
+      chain: 'solana',
+      score: 0.82,
+      verdict: 'strong',
+    },
+    {
+      symbol: 'BONK',
+      source: 'screener',
+      agent: 'meme',
+      chain: 'solana',
+      score: 0.71,
+      verdict: 'moderate',
+    },
+    {
+      symbol: 'WIF',
+      source: 'narrative',
+      agent: 'narrative',
+      chain: 'solana',
+      score: 0.79,
+      verdict: 'strong',
+    },
+    {
+      symbol: 'POPCAT',
+      source: 'screener',
+      agent: 'meme',
+      chain: 'solana',
+      score: 0.63,
+      verdict: 'moderate',
+    },
+    {
+      symbol: 'SOL',
+      source: 'perps',
+      agent: 'perps',
+      chain: 'hyperliquid',
+      score: 0.74,
+      verdict: null,
+    },
     { symbol: 'SOL/USDC', source: 'lp', agent: 'lp', chain: 'solana', score: 0.58, verdict: null },
-    { symbol: 'MEW', source: 'screener', agent: 'meme', chain: 'solana', score: 0.52, verdict: 'weak' },
+    {
+      symbol: 'MEW',
+      source: 'screener',
+      agent: 'meme',
+      chain: 'solana',
+      score: 0.52,
+      verdict: 'weak',
+    },
   ] as const;
   return base.slice(0, Math.max(3, Math.min(n, base.length))).map((b, i) => ({
     id: 1000 + i,
@@ -244,15 +363,24 @@ function demoStrategy(): StrategyRow[] {
       params: { scoringThreshold: 0.45, maxPositions: 5, llmFilter: true },
       created_by: 'user',
       active: true,
+      status: 'approved',
+      rationale: null,
       created_at: iso(600),
     },
     {
       id: 2,
       agent: 'perps',
       version: 1,
-      params: { markets: ['BTC', 'ETH', 'SOL'], maxTradeUsd: 200, exitLossPct: -0.08, exitProfitPct: 0.15 },
+      params: {
+        markets: ['BTC', 'ETH', 'SOL'],
+        maxTradeUsd: 200,
+        exitLossPct: -0.08,
+        exitProfitPct: 0.15,
+      },
       created_by: 'user',
       active: true,
+      status: 'approved',
+      rationale: null,
       created_at: iso(590),
     },
     {
@@ -262,7 +390,44 @@ function demoStrategy(): StrategyRow[] {
       params: { stopLossPct: -0.15, takeProfitPct: 0.2, outOfRangeMin: 30, minFeeTvl: 0.05 },
       created_by: 'user',
       active: true,
+      status: 'approved',
+      rationale: null,
       created_at: iso(580),
+    },
+  ];
+}
+
+function demoEvaluation(): EvaluationRow[] {
+  return [
+    {
+      agent: 'meme',
+      version: 1,
+      runs: 12,
+      avg_win_rate: 0.62,
+      avg_sharpe: 1.4,
+      avg_max_drawdown: -0.09,
+      total_trades: 118,
+      last_run: iso(35),
+    },
+    {
+      agent: 'perps',
+      version: 1,
+      runs: 9,
+      avg_win_rate: 0.57,
+      avg_sharpe: 1.1,
+      avg_max_drawdown: -0.12,
+      total_trades: 86,
+      last_run: iso(80),
+    },
+    {
+      agent: 'lp',
+      version: 1,
+      runs: 5,
+      avg_win_rate: 0.66,
+      avg_sharpe: 1.7,
+      avg_max_drawdown: -0.05,
+      total_trades: 41,
+      last_run: iso(120),
     },
   ];
 }

@@ -1,6 +1,7 @@
 /**
  * grammY Telegram bot (BLUEPRINT.md §10.2).
  * Commands: /start /status /positions /signals /pause /resume /chat
+ *           /proposals /approve /reject (strategy self-tuning, §5.3)
  * /pause uses an inline keyboard confirmation; /chat forwards to the Luxy agent.
  */
 import { Bot, InlineKeyboard } from 'grammy';
@@ -10,6 +11,7 @@ import { audit } from '../db/audit.js';
 import { isPaused, setPaused } from '../redis/connection.js';
 import { luxyLLM, tryChat } from '../llm/adapter.js';
 import { buildChatSystemPrompt } from '../llm/prompts/luxy-system.js';
+import { listProposals, approveProposal, rejectProposal } from '../strategy/index.js';
 import { logger } from '../utils/logger.js';
 
 const log = logger.child({ module: 'telegram-bot' });
@@ -42,6 +44,9 @@ export async function startBot(): Promise<Bot | null> {
         '/signals — last 5 signals',
         '/pause — halt all new execution',
         '/resume — resume execution',
+        '/proposals — list pending strategy proposals',
+        '/approve <id> — activate a proposal',
+        '/reject <id> — discard a proposal',
         '/chat <msg> — talk to Luxy',
       ].join('\n'),
       { parse_mode: 'Markdown' },
@@ -133,6 +138,34 @@ export async function startBot(): Promise<Bot | null> {
       buildChatSystemPrompt(`open_positions=${open.rows[0]?.n ?? 0}; dry_run=${config.DRY_RUN}`),
     );
     await ctx.reply(res?.text?.slice(0, 4000) ?? 'Luxy is unavailable right now (LLM not configured or failed).');
+  });
+
+  // ---- Strategy self-tuning approvals (BLUEPRINT §5.3) ----
+  bot.command('proposals', async (ctx) => {
+    if (!authorized(ctx)) return;
+    const proposals = await listProposals();
+    if (proposals.length === 0) return void ctx.reply('No pending strategy proposals.');
+    const lines = proposals.map(
+      (p) =>
+        `#${p.id} ${p.agent} v${p.version} (by ${p.createdBy})\n  ${p.rationale.slice(0, 160)}`,
+    );
+    await ctx.reply(lines.join('\n\n'));
+  });
+
+  bot.command('approve', async (ctx) => {
+    if (!authorized(ctx)) return;
+    const id = Number(ctx.message?.text?.replace(/^\/approve\s*/, '').trim());
+    if (!Number.isInteger(id)) return void ctx.reply('Usage: /approve <proposal-id>');
+    const result = await approveProposal(id, 'user');
+    await ctx.reply(`✓ ${result}`);
+  });
+
+  bot.command('reject', async (ctx) => {
+    if (!authorized(ctx)) return;
+    const id = Number(ctx.message?.text?.replace(/^\/reject\s*/, '').trim());
+    if (!Number.isInteger(id)) return void ctx.reply('Usage: /reject <proposal-id>');
+    const result = await rejectProposal(id, 'user');
+    await ctx.reply(`✗ ${result}`);
   });
 
   bot.catch((err) => log.error({ err }, 'telegram bot error'));
