@@ -187,31 +187,43 @@ This means the agent doesn't just reason about trades — it **validates them in
 git clone https://github.com/mrxpoint/Luxy-AI.git
 cd Luxy-AI
 
-# 2. Install dependencies
+# 2. Start Postgres 16 + Redis 7 (local dev infra)
+docker compose up -d
+
+# 3. Install dependencies
 pnpm install
 
-# 3. Configure environment
+# 4. Configure environment
 cp .env.example .env
-# Edit .env with your API keys
+# Edit .env with your API keys (everything works in dry-run with keys empty)
 
-# 4. Run DB migrations
+# 5. Run DB migrations
 pnpm db:migrate
 
-# 5. Bootstrap wallets (one-time, manual)
+# 6. Bootstrap wallets (one-time, manual)
 pnpm bootstrap-wallet --agent=meme --chain=solana
 pnpm bootstrap-wallet --agent=lp --chain=solana
 
-# 6. Start all processes (development)
+# 7. Start all processes (development)
 pnpm dev:screener    # Meme agent screener
 pnpm dev:executor    # Order executor + risk guard
 pnpm dev:agent       # Luxy main agent
-pnpm dev:telegram    # Telegram bot
+pnpm dev:perps       # Hyperliquid perps agent
+pnpm dev:lp          # LP agent (Hunter/Healer/HiveMind)
+pnpm dev:narrative   # Reddit + Telegram narrative agent
+pnpm dev:telegram    # Telegram bot + notifications
+pnpm dev:web         # Next.js web UI on http://localhost:3000
 
 # OR: Start all with PM2 (production)
 pm2 start ecosystem.config.cjs --env production
 pm2 save
 pm2 startup
 ```
+
+> **Dry-run first.** `DRY_RUN=true` (the default) simulates every fill end-to-end —
+> screeners, backtests, risk checks, positions and PnL all work without wallets,
+> API keys, or real funds. Live execution paths fail loudly until wallet signing
+> is provisioned (see BLUEPRINT.md §12).
 
 ### Environment Variables
 
