@@ -1,0 +1,101 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================================
+   Luxy AI — Bauhaus × Brutalism (soft bright palette)
+   Blueprint §10.1: hard shadows, 2px ink borders, zero radius,
+   hover invert. Palette: warm cream canvas + soft pastel accents.
+   ============================================================ */
+
+:root {
+  --canvas: #fbf6ec;
+  --ink: #191714;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  @apply bg-canvas text-ink font-grotesk antialiased;
+  background-image:
+    radial-gradient(circle at 1px 1px, rgba(25, 23, 20, 0.06) 1px, transparent 0);
+  background-size: 24px 24px;
+}
+
+::selection {
+  @apply bg-butter text-ink;
+}
+
+/* Brutalist component primitives ------------------------------ */
+
+@layer components {
+  .brutal-card {
+    @apply bg-paper border-2 border-ink shadow-brutal;
+  }
+
+  .brutal-btn {
+    @apply inline-flex items-center justify-center gap-2 border-2 border-ink px-4 py-2
+      font-bold text-sm shadow-brutal-sm transition-all duration-150
+      active:translate-x-0.5 active:translate-y-0.5 active:shadow-none select-none;
+  }
+  .brutal-btn-primary {
+    @apply brutal-btn bg-butter text-ink hover:bg-ink hover:text-butter;
+  }
+  .brutal-btn-ghost {
+    @apply brutal-btn bg-paper text-ink hover:bg-ink hover:text-paper;
+  }
+
+  .brutal-input {
+    @apply w-full border-2 border-ink bg-paper px-3 py-2 font-mono text-sm
+      placeholder:text-ink/40 focus:outline-none focus:ring-2 focus:ring-butter;
+  }
+
+  .brutal-badge {
+    @apply inline-flex items-center border-2 border-ink px-2 py-0.5 font-mono
+      text-[11px] font-bold uppercase tracking-wide;
+  }
+
+  .data-table {
+    @apply w-full border-collapse font-mono text-sm;
+  }
+  .data-table th {
+    @apply border-b-2 border-ink bg-butterSoft px-3 py-2 text-left font-bold
+      uppercase tracking-wide text-xs text-ink;
+  }
+  .data-table td {
+    @apply border-b border-ink/20 px-3 py-2 align-middle;
+  }
+  .data-table tr:hover td {
+    @apply bg-skySoft/50;
+  }
+}
+
+/* Custom scrollbar (long lists) -------------------------------- */
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: var(--canvas);
+  border-left: 2px solid var(--ink);
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--ink);
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: #ff9b85;
+}
+
+/* Reduced motion ----------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
