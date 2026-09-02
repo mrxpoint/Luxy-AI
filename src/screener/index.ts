@@ -13,20 +13,35 @@ import { audit } from '../db/audit.js';
 import { signalQueue, notify } from '../redis/queues.js';
 import { seenRecently } from '../redis/connection.js';
 import { logger } from '../utils/logger.js';
-import { fetchSolanaPairs, fetchPairsByTokens, fetchLatestProfiles, type DexPair } from './dexscreener.js';
+import {
+  fetchPairsForChains,
+  fetchPairsByTokens,
+  fetchLatestProfiles,
+  SCREENER_CHAINS,
+  type DexPair,
+  type DexChainId,
+} from './dexscreener.js';
 import { scorePair, SCORING_THRESHOLD } from './scoring.js';
 import { filterCandidate } from './llm-filter.js';
-import type { ScoredCandidate } from '../types/index.js';
+import type { Chain, ScoredCandidate } from '../types/index.js';
 
 const log = logger.child({ module: 'screener' });
 const DEDUPE_TTL_S = 3 * 60 * 60; // don't re-queue the same token within 3h
 
-function toCandidate(pair: DexPair, score: number): ScoredCandidate {
+/** Discovery queries per chain — short/meme-centric terms that hit DEX search. */
+const SEARCH_QUERIES: Record<DexChainId, string[]> = {
+  solana: ['SOL', 'USDC', 'BONK', 'WIF'],
+  base: ['AERO', 'DEGEN', 'BRETT', 'USDC'],
+  ethereum: ['PEPE', 'SHIB', 'USDC', 'WETH'],
+};
+
+function toCandidate(pair: DexPair, score: number): ScoredCandidate | null {
+  if (!(SCREENER_CHAINS as string[]).includes(pair.chainId)) return null;
   return {
     id: `${pair.chainId}:${pair.baseToken.address}`,
     source: 'screener',
     agent: 'meme',
-    chain: 'solana',
+    chain: pair.chainId as Chain,
     token: pair.baseToken.address,
     symbol: pair.baseToken.symbol,
     name: pair.baseToken.name,
@@ -67,30 +82,39 @@ async function persistCandidate(c: ScoredCandidate): Promise<number | null> {
 }
 
 async function screenOnce(): Promise<void> {
-  // Discovery: search endpoints + boosted tokens union.
-  const searchQueries = ['SOL', 'USDC', 'BONK', 'WIF'];
+  // Discovery per chain (Phase 3: Solana + Base + Ethereum — BLUEPRINT §9.3).
   const pairMaps = new Map<string, DexPair>();
-  for (const q of searchQueries) {
-    try {
-      for (const p of await fetchSolanaPairs(q)) {
-        if (p.baseToken?.address && !pairMaps.has(p.baseToken.address)) pairMaps.set(p.baseToken.address, p);
+  for (const chain of SCREENER_CHAINS) {
+    for (const q of SEARCH_QUERIES[chain]) {
+      try {
+        for (const p of await fetchPairsForChains(q, [chain])) {
+          if (p.baseToken?.address && !pairMaps.has(`${p.chainId}:${p.baseToken.address}`)) {
+            pairMaps.set(`${p.chainId}:${p.baseToken.address}`, p);
+          }
+        }
+      } catch (err) {
+        log.warn({ err, q, chain }, 'dexscreener search failed');
       }
-    } catch (err) {
-      log.warn({ err, q }, 'dexscreener search failed');
     }
   }
   try {
-    const profiles = await fetchLatestProfiles();
-    const addresses = profiles.slice(0, 30).map((p) => p.tokenAddress);
-    for (const p of await fetchPairsByTokens(addresses)) {
-      if (p.baseToken?.address && !pairMaps.has(p.baseToken.address)) pairMaps.set(p.baseToken.address, p);
+    const profiles = await fetchLatestProfiles(SCREENER_CHAINS);
+    const addresses = profiles.slice(0, 60).map((p) => p.tokenAddress);
+    for (const p of await fetchPairsByTokens(addresses, SCREENER_CHAINS)) {
+      if (p.baseToken?.address && !pairMaps.has(`${p.chainId}:${p.baseToken.address}`)) {
+        pairMaps.set(`${p.chainId}:${p.baseToken.address}`, p);
+      }
     }
   } catch (err) {
     log.debug({ err }, 'boosted profiles unavailable');
   }
 
   const pairs = [...pairMaps.values()];
-  log.info({ discovered: pairs.length }, 'screener cycle start');
+  const perChain = pairs.reduce<Record<string, number>>((acc, p) => {
+    acc[p.chainId] = (acc[p.chainId] ?? 0) + 1;
+    return acc;
+  }, {});
+  log.info({ discovered: pairs.length, perChain }, 'screener cycle start');
 
   let queued = 0;
   for (const pair of pairs) {
@@ -98,6 +122,7 @@ async function screenOnce(): Promise<void> {
     if (score < SCORING_THRESHOLD) continue;
 
     const candidate = toCandidate(pair, score);
+    if (!candidate) continue;
 
     // Tier-2 LLM filter — only strong/moderate proceed.
     const { verdict, reason } = await filterCandidate(candidate);

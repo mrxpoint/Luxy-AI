@@ -14,7 +14,9 @@ import { logger } from '../utils/logger.js';
 import type { LuxyIntent } from '../types/index.js';
 import { runAllChecks } from './risk-guard.js';
 import { getQuote, quoteSlippage, executeSwap, USDC_MINT, SOL_MINT } from './jupiter.js';
+import { uniswapQuote, uniswapExecute, EVM_TOKENS, type UniswapQuote } from './uniswap.js';
 import { hyperliquidExecute } from '../agents/perps/hyperliquid.js';
+import { robinhoodExecute } from './robinhood.js';
 
 const log = logger.child({ module: 'executor' });
 
@@ -51,6 +53,26 @@ async function processIntent(job: Job<LuxyIntent>): Promise<{ status: string; no
       log.warn({ err }, 'jupiter quote failed — proceeding with 0 slippage estimate (risk guard will still gate)');
     }
   }
+  if (
+    intent.action === 'entry' &&
+    (intent.chain === 'base' || intent.chain === 'ethereum') &&
+    intent.sizeUsd &&
+    intent.token
+  ) {
+    // Real Uniswap v3 QuoterV2 ladder → genuine impact estimate for the guard.
+    try {
+      const q = await uniswapQuote(
+        intent.chain,
+        EVM_TOKENS[intent.chain].usdc,
+        intent.token as `0x${string}`,
+        BigInt(Math.round(intent.sizeUsd * 1e6)),
+      );
+      estimatedSlippage = q.priceImpactPct;
+      (intent as LuxyIntent & { _uniQuote?: UniswapQuote })._uniQuote = q;
+    } catch (err) {
+      log.warn({ err }, 'uniswap quote failed — proceeding with 0 slippage estimate (risk guard will still gate)');
+    }
+  }
 
   const check = await runAllChecks(intent, estimatedSlippage);
   if (!check.allowed) {
@@ -74,9 +96,22 @@ async function processIntent(job: Job<LuxyIntent>): Promise<{ status: string; no
       );
       const fill = await executeSwap(quote, config.DRY_RUN);
       await insertPosition(intent, fill.signature, fill.note);
+    } else if (intent.chain === 'base' || intent.chain === 'ethereum') {
+      // Phase 3: Uniswap v3 quoted path (dry-run simulated, live fail-loud).
+      const fill = await uniswapExecute({
+        chain: intent.chain,
+        tokenOut: intent.token as `0x${string}`,
+        sizeUsd: intent.sizeUsd ?? 0,
+        maxSlippagePct: config.RISK_MAX_SLIPPAGE_PCT,
+        dryRun: config.DRY_RUN,
+      });
+      await insertPosition(intent, fill.txHash, fill.note);
+    } else if (intent.chain === 'robinhood') {
+      // Phase 3: Robinhood Crypto (Ed25519-signed; dry-run simulated).
+      const fill = await robinhoodExecute(intent);
+      await insertPosition(intent, fill.orderId, fill.note);
     } else {
-      // EVM paths are Phase 3 — record dry-run positions so the runtime is exercisable.
-      await insertPosition(intent, null, 'dry-run fill (EVM execution arrives in Phase 3)');
+      await insertPosition(intent, null, 'dry-run fill (unhandled chain)');
     }
     await audit('executor', 'entry', { intent });
     await notify(
