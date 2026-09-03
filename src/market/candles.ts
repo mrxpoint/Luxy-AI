@@ -8,30 +8,18 @@
  * Redis hot keys per §8.3: `price:<symbol>` (30s TTL) for the latest close.
  */
 import { Pool } from 'pg';
-import Redis from 'ioredis';
+import { redis } from '../redis/connection.js';
 import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
 import type { Candle } from '../types/index.js';
 
 const log = logger.child({ module: 'candles' });
 
-const globalStore = globalThis as unknown as { luxyCandlePool?: Pool; luxyCandleRedis?: Redis };
+const globalStore = globalThis as unknown as { luxyCandlePool?: Pool };
 
 function pool(): Pool {
   globalStore.luxyCandlePool ??= new Pool({ connectionString: config.DATABASE_URL, max: 3 });
   return globalStore.luxyCandlePool;
-}
-
-function redis(): Redis | null {
-  try {
-    globalStore.luxyCandleRedis ??= new Redis(config.REDIS_URL, {
-      lazyConnect: true,
-      maxRetriesPerRequest: 1,
-    });
-    return globalStore.luxyCandleRedis;
-  } catch {
-    return null;
-  }
 }
 
 export interface CandleKey {
@@ -67,10 +55,9 @@ export async function upsertCandles(key: CandleKey, candles: Candle[]): Promise<
   }
 
   // Hot price cache (BLUEPRINT §8.3): price:<symbol> with 30s TTL.
-  const r = redis();
-  if (r && candles.length > 0) {
+  if (candles.length > 0) {
     const last = candles[candles.length - 1];
-    r.set(`price:${key.token}`, String(last.c), 'EX', 30).catch(() => undefined);
+    redis.set(`price:${key.token}`, String(last.c), 'EX', 30).catch(() => undefined);
   }
   return written;
 }
