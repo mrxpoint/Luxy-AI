@@ -26,11 +26,9 @@ export interface HyperliquidCandle {
 }
 
 export async function fetchAllMids(): Promise<Record<string, string>> {
-  const data = await postJson<{ allMids?: Record<string, string>; [k: string]: unknown }>(
-    `${BASE}/info`,
-    { type: 'allMids' },
-  );
-  return (data as { allMids?: Record<string, string> }).allMids ?? {};
+  // Hyperliquid returns a FLAT map { BTC: "77168.5", ... } — verified live.
+  const data = await postJson<Record<string, string>>(`${BASE}/info`, { type: 'allMids' });
+  return data ?? {};
 }
 
 export async function fetchCandles(coin: string, interval = '1h', hours = 24): Promise<Candle[]> {

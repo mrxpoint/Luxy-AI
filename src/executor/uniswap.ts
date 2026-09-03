@@ -1,8 +1,11 @@
 /**
  * Uniswap v3 execution path — Phase 3 EVM (BLUEPRINT.md §9.3 / §14 P3).
  *
- * Quotes are REAL: QuoterV2 static-call against public RPC (no auth needed)
- * feeding genuine slippage estimates into the risk guard.
+ * Quotes are REAL: `quoteExactInput` static-call against the canonical
+ * QuoterV2 on Ethereum (0x61fFE014…) and Base (0x3d4e44Eb…), verified live
+ * (100 USDC → WETH both chains). The bytes-path API is used instead of the
+ * struct `quoteExactInputSingle` — the struct variant reverted on public
+ * RPCs during integration testing, the path variant did not.
  *
  * Execution is dry-run aware, mirroring the Jupiter/Hyperliquid stance:
  *   DRY_RUN  → simulated fill recorded at the executor.
@@ -10,15 +13,12 @@
  *              pre-approved SwapRouter02 allowance. Allowances are NEVER
  *              auto-opened — the executor fails loud with instructions
  *              instead of silently approving token spends.
- *
- * Router addresses: Ethereum SwapRouter02 is the well-known canonical
- * deployment; Base must be provided explicitly via env (BASE_SWAP_ROUTER_02)
- * so live execution cannot hit an unverified contract by accident.
  */
 import {
   createPublicClient,
   http,
   parseAbi,
+  encodeFunctionData,
   type Address,
   type PublicClient,
   type Chain,
@@ -29,9 +29,9 @@ import { logger } from '../utils/logger.js';
 
 const log = logger.child({ module: 'uniswap' });
 
-// Canonical cross-chain QuoterV2 deployment (Ethereum + Base, Uniswap docs).
-const QUOTER_V2: Record<'base' | 'ethereum', Address> = {
-  ethereum: '0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a',
+/** Canonical QuoterV2 deployments (verified: code exists + live quote OK). */
+export const QUOTER_V2: Record<'base' | 'ethereum', Address> = {
+  ethereum: '0x61fFE014bA17989E743c5F6cB21bF9697530B21e',
   base: '0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a',
 };
 
@@ -48,11 +48,11 @@ export const EVM_TOKENS: Record<'base' | 'ethereum', { usdc: Address; weth: Addr
 };
 
 const QUOTER_ABI = parseAbi([
-  'function quoteExactInputSingle((address tokenIn,address tokenOut,uint24 fee,uint256 amountIn,uint160 sqrtPriceLimitX96)) returns (uint256 amountOut,uint160 sqrtPriceX96After,uint32 initializedTicksCrossed,uint256 gasEstimate)',
+  'function quoteExactInput(bytes path, uint256 amountIn) returns (uint256 amountOut,uint160[] sqrtPriceX96AfterArray,uint32[] initializedTicksCrossedArray,uint256 gasEstimate)',
 ]);
 
 const ROUTER_ABI = parseAbi([
-  'function exactInputSingle((address tokenIn,address tokenOut,uint24 fee,address recipient,uint256 deadline,uint256 amountIn,uint256 amountOutMinimum,uint160 sqrtPriceLimitX96)) payable returns (uint256 amountOut)',
+  'function exactInput((bytes path,address recipient,uint256 deadline,uint256 amountIn,uint256 amountOutMinimum)) payable returns (uint256 amountOut)',
 ]);
 
 const ERC20_ABI = parseAbi([
@@ -88,11 +88,20 @@ function client(chain: 'base' | 'ethereum'): PublicClient {
   return c;
 }
 
+/** Uniswap v3 path encoding: tokenIn (20b) + fee (3b) + tokenOut (20b). */
+function buildPath(tokenIn: Address, fee: number, tokenOut: Address): `0x${string}` {
+  return (
+    '0x' +
+    tokenIn.slice(2) +
+    fee.toString(16).padStart(6, '0') +
+    tokenOut.slice(2)
+  ) as `0x${string}`;
+}
+
 export interface UniswapQuote {
   outRaw: bigint;
   /** Estimated price impact from a size ladder (two quotes). */
   priceImpactPct: number;
-  gasEstimate: bigint;
 }
 
 /**
@@ -108,29 +117,21 @@ export async function uniswapQuote(
   feeTier = 3000,
 ): Promise<UniswapQuote> {
   const c = client(chain);
-  const args = (amount: bigint) =>
-    [{ tokenIn, tokenOut, fee: feeTier, amountIn: amount, sqrtPriceLimitX96: 0n }] as const;
+  const quote = (amount: bigint) =>
+    c.readContract({
+      address: QUOTER_V2[chain],
+      abi: QUOTER_ABI,
+      functionName: 'quoteExactInput',
+      args: [buildPath(tokenIn, feeTier, tokenOut), amount],
+    });
 
-  const [full, probe] = await Promise.all([
-    c.readContract({
-      address: QUOTER_V2[chain],
-      abi: QUOTER_ABI,
-      functionName: 'quoteExactInputSingle',
-      args: args(amountInRaw),
-    }),
-    c.readContract({
-      address: QUOTER_V2[chain],
-      abi: QUOTER_ABI,
-      functionName: 'quoteExactInputSingle',
-      args: args(amountInRaw / 10n),
-    }),
-  ]);
+  const [full, probe] = await Promise.all([quote(amountInRaw), quote(amountInRaw / 10n)]);
 
   const outFull = full[0];
   const outProbe = probe[0] * 10n;
   const priceImpactPct = outProbe > 0n ? Math.max(0, 1 - Number(outFull) / Number(outProbe)) : 0;
 
-  return { outRaw: outFull, priceImpactPct, gasEstimate: full[3] };
+  return { outRaw: outFull, priceImpactPct };
 }
 
 export interface UniswapFillResult {
@@ -140,8 +141,9 @@ export interface UniswapFillResult {
 }
 
 /**
- * Swap exact-in USDC → token via SwapRouter02.
- * Live path verifies allowance first and NEVER opens it automatically.
+ * Swap exact-in USDC → token via SwapRouter02 `exactInput` (same path
+ * encoding as the verified quote). Live path verifies allowance first and
+ * NEVER opens it automatically.
  */
 export async function uniswapExecute(input: {
   chain: 'base' | 'ethereum';
@@ -149,11 +151,13 @@ export async function uniswapExecute(input: {
   sizeUsd: number;
   maxSlippagePct: number;
   dryRun: boolean;
+  feeTier?: number;
 }): Promise<UniswapFillResult> {
   const { chain, tokenOut, sizeUsd, maxSlippagePct, dryRun } = input;
+  const feeTier = input.feeTier ?? 3000;
   const tokenIn = EVM_TOKENS[chain].usdc;
 
-  const quote = await uniswapQuote(chain, tokenIn, tokenOut, BigInt(Math.round(sizeUsd * 1e6)));
+  const quote = await uniswapQuote(chain, tokenIn, tokenOut, BigInt(Math.round(sizeUsd * 1e6)), feeTier);
   if (quote.priceImpactPct > maxSlippagePct) {
     throw new Error(
       `uniswap quote impact ${(quote.priceImpactPct * 100).toFixed(2)}% exceeds ${(maxSlippagePct * 100).toFixed(1)}% cap`,
@@ -206,23 +210,20 @@ export async function uniswapExecute(input: {
     transport: httpTransport(rpcUrl(chain)),
   });
   const minOut = (quote.outRaw * BigInt(Math.round((1 - maxSlippagePct) * 10_000))) / 10_000n;
-  const hash = await wallet.writeContract({
-    address: router,
+  const callData = encodeFunctionData({
     abi: ROUTER_ABI,
-    functionName: 'exactInputSingle',
+    functionName: 'exactInput',
     args: [
       {
-        tokenIn,
-        tokenOut,
-        fee: 3000,
+        path: buildPath(tokenIn, feeTier, tokenOut),
         recipient: account.address,
         deadline: BigInt(Math.floor(Date.now() / 1000) + 120),
         amountIn: needed,
         amountOutMinimum: minOut,
-        sqrtPriceLimitX96: 0n,
       },
     ],
   });
+  const hash = await wallet.sendTransaction({ to: router, data: callData });
   log.info({ chain, hash }, 'uniswap swap submitted');
   return { txHash: hash, outRaw: quote.outRaw.toString(), note: 'live uniswap v3 swap' };
 }

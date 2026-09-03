@@ -61,7 +61,7 @@ const envSchema = z.object({
 
   // EVM (Phase 3 — Base / Ethereum)
   BASE_RPC_URL: z.string().default('https://mainnet.base.org'),
-  ETHEREUM_RPC_URL: z.string().default('https://eth.llamarpc.com'),
+  ETHEREUM_RPC_URL: z.string().default('https://ethereum-rpc.publicnode.com'),
   EVM_EXECUTOR_PRIVATE_KEY: z.string().default(''),
   UNISWAP_SUBGRAPH_ETH: z
     .string()
