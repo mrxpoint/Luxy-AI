@@ -23,7 +23,12 @@
     "dev:perps": "tsx src/agents/perps/index.ts",
     "dev:lp": "tsx src/agents/lp/index.ts",
     "dev:narrative": "tsx src/agents/narrative/index.ts",
+    "dev:polymarket": "tsx src/agents/polymarket/index.ts",
+    "dev:candles": "tsx src/market/ingest.ts",
     "dev:telegram": "tsx src/telegram/index.ts",
+    "replay": "tsx scripts/replay-signals.ts",
+    "ft:export": "tsx scripts/export-training-data.ts",
+    "tui": "tsx src/tui/index.tsx",
     "dev:web": "pnpm --filter @luxy/web dev",
     "build:web": "pnpm --filter @luxy/web build",
     "start:web": "pnpm --filter @luxy/web start"
