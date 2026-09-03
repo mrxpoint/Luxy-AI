@@ -4,7 +4,12 @@
  */
 
 export type AgentName = 'meme' | 'perps' | 'lp' | 'narrative' | 'polymarket';
-export type Chain = 'solana' | 'base' | 'ethereum' | 'hyperliquid' | 'robinhood';
+/**
+ * Execution venues. "Chains" proper (solana/base/ethereum) plus venues that
+ * carry their own execution stack (hyperliquid perps, polymarket CLOB on
+ * Polygon, robinhood crypto).
+ */
+export type Chain = 'solana' | 'base' | 'ethereum' | 'hyperliquid' | 'robinhood' | 'polymarket';
 export type IntentAction = 'entry' | 'exit' | 'hold' | 'alert';
 export type LlmVerdict = 'strong' | 'moderate' | 'weak' | 'skip';
 export type OrderType = 'gtc' | 'gtd' | 'fok';

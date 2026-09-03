@@ -19,6 +19,7 @@ export type AuditActor =
   | 'perps-agent'
   | 'lp-agent'
   | 'narrative-agent'
+  | 'polymarket-agent'
   | 'telegram-bot';
 
 export async function audit(actor: AuditActor, action: string, payload: unknown): Promise<void> {

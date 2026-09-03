@@ -4,9 +4,9 @@
  * Pool queries power the EVM Hunter; native-token pricing (from the free
  * DexScreener API) feeds the gas cost optimizer used by the EVM Healer.
  */
-import { getJson, postJson } from '../../utils/http.js';
-import { config } from '../../config/index.js';
-import { EVM_TOKENS } from '../../executor/uniswap.js';
+import { getJson, postJson } from '../../../utils/http.js';
+import { config } from '../../../config/index.js';
+import { EVM_TOKENS } from '../../../executor/uniswap.js';
 
 export interface UniswapPool {
   id: string;

@@ -17,6 +17,7 @@ import { getQuote, quoteSlippage, executeSwap, USDC_MINT, SOL_MINT } from './jup
 import { uniswapQuote, uniswapExecute, EVM_TOKENS, type UniswapQuote } from './uniswap.js';
 import { hyperliquidExecute } from '../agents/perps/hyperliquid.js';
 import { robinhoodExecute } from './robinhood.js';
+import { polymarketExecute } from '../agents/polymarket/executor.js';
 
 const log = logger.child({ module: 'executor' });
 
@@ -109,6 +110,10 @@ async function processIntent(job: Job<LuxyIntent>): Promise<{ status: string; no
     } else if (intent.chain === 'robinhood') {
       // Phase 3: Robinhood Crypto (Ed25519-signed; dry-run simulated).
       const fill = await robinhoodExecute(intent);
+      await insertPosition(intent, fill.orderId, fill.note);
+    } else if (intent.chain === 'polymarket') {
+      // Phase 3: Polymarket CLOB (GTC/GTD; dry-run simulated).
+      const fill = await polymarketExecute(intent);
       await insertPosition(intent, fill.orderId, fill.note);
     } else {
       await insertPosition(intent, null, 'dry-run fill (unhandled chain)');
