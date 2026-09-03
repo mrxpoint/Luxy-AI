@@ -38,3 +38,4 @@ Thumbs.db
 *.key
 keys.txt
 wallets/*.json
+data/
