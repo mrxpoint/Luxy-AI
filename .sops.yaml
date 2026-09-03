@@ -1,0 +1,17 @@
+# Luxy AI — sops + age secret encryption (BLUEPRINT.md §12.1)
+#
+# One-time setup on the VPS:
+#   1. age-keygen -o ~/.config/sops/age/keys.txt
+#   2. Copy the generated PUBLIC key (age1...) into creation_rules below.
+#   3. sops --encrypt .env > .env.enc   # .env.enc is safe to commit
+#   4. Runtime (never writes plaintext to disk):
+#      export SOPS_AGE_KEY_FILE=~/.config/sops/age/keys.txt
+#      sops exec-env .env.enc 'pm2 start ecosystem.config.cjs --env production'
+#
+# NOTE: replace the placeholder public key below with YOUR OWN key before
+# encrypting anything. This file only defines the rules — no secrets live here.
+
+creation_rules:
+  - path_regex: .*\.enc\.env$
+    age: >-
+      age1REPLACE_WITH_YOUR_AGE_PUBLIC_KEY

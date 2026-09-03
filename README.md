@@ -165,8 +165,9 @@ This means the agent doesn't just reason about trades — it **validates them in
 | Solana Meme Tokens | Alpha | DexScreener + Birdeye + Helius |
 | Solana LP (Meteora DLMM) | Alpha | Hunter/Healer/HiveMind pattern |
 | Hyperliquid Perps | Alpha (dry-run) | EIP-712 signing, 10 major markets |
-| Base/Ethereum (EVM) | Roadmap | Phase 3 |
-| Polymarket Prediction | Roadmap | Phase 3 |
+| Base/Ethereum (EVM) | Alpha (dry-run) | Uniswap v3 screener + executor, gas-aware LP |
+| Polymarket Prediction | Alpha (dry-run) | Gamma + CLOB, LLM edge detection, GTC/GTD |
+| Robinhood Crypto | Alpha (dry-run) | Ed25519-signed US crypto orders |
 
 ---
 
@@ -280,23 +281,55 @@ luxy-ai/
 │   ├── db/              # PostgreSQL pool + audit helper
 │   ├── redis/           # BullMQ queues
 │   ├── llm/             # Provider-agnostic LLM adapter
-│   ├── e2b/             # E2B sandbox terminal integration
-│   ├── screener/        # Meme Agent screener (DexScreener, Birdeye, Helius)
-│   ├── executor/        # Risk guard + Jupiter executor + BullMQ worker
+│   ├── e2b/             # E2B sandbox terminal + kelly/liquidity preflight
+│   ├── screener/        # Meme screener — Solana + Base + Ethereum
+│   ├── strategy/        # Self-tuning: propose → approve → version (§5.3)
+│   ├── market/          # TimescaleDB candle store + OHLCV ingest (§8.1)
+│   ├── executor/        # Risk guard + Jupiter/Uniswap/Polymarket/Robinhood
+│   ├── tui/             # Ink terminal monitor (§10.3)
 │   └── agents/
-│       ├── luxy/        # Main agent (Anthropic direct)
+│       ├── luxy/        # Main agent + strategy tuning pass
 │       ├── perps/       # Hyperliquid perps agent
-│       ├── lp/          # LP Agent (Meteora DLMM Hunter/Healer/HiveMind)
+│       ├── lp/          # Meteora Hunter/Healer/HiveMind + evm/ (Uniswap v3)
+│       ├── polymarket/  # Prediction-market edge agent
 │       └── narrative/   # Reddit + Telegram narrative scraper
 ├── apps/
-│   └── web/             # Next.js 15 web UI
+│   └── web/             # Next.js 15 web UI (+ /evaluation dashboard)
 ├── db/
-│   └── schema.sql       # PostgreSQL schema
+│   └── schema.sql       # PostgreSQL schema (incl. candles hypertable)
+├── e2b/
+│   └── templates/       # Custom sandbox template + Python analysis templates
 ├── scripts/
 │   ├── migrate.ts
-│   └── bootstrap-wallet.ts
+│   ├── bootstrap-wallet.ts
+│   ├── replay-signals.ts # Backtest replay engine (P4)
+│   └── export-training-data.ts # Fine-tuning SFT export (§11)
+├── docker-compose.prod.yml # Phase 4 full service isolation
 └── ecosystem.config.cjs # PM2 multi-process config
 ```
+
+---
+
+## Phase 3/4 Modules
+
+Beyond the core Phase 1–2 runtime, the blueprint's full scope is implemented:
+
+| Module | What it does | Where |
+|---|---|---|
+| **Strategy self-tuning** | Luxy drafts conservative param proposals from closed-position outcomes; approve/reject via Telegram (`/proposals` `/approve <id>` `/reject <id>`) or the Strategy page. Versions are never overwritten. | `src/strategy/` · `/strategy` |
+| **EVM meme trading** | Multi-chain screener (Solana + Base + Ethereum via DexScreener) and a Uniswap v3 executor with REAL QuoterV2 quotes feeding the risk guard. Live signing is fail-loud until provisioned. | `src/screener/` · `src/executor/uniswap.ts` |
+| **Uniswap v3 LP** | Hunter/Healer over The Graph subgraph with the gas cost optimizer: a redeploy is skipped when gas > expected fee gain (open question #6). Enable with `LP_EVM_ENABLED=true`. | `src/agents/lp/evm/` |
+| **Polymarket agent** | Gamma market discovery → Tier-2 LLM probability estimate → edge vs CLOB midpoint → GTC/GTD intents when edge ≥ 8¢. | `src/agents/polymarket/` |
+| **Robinhood Crypto** | Ed25519-signed orders via `trading.robinhood.com` (node:crypto, no extra deps). | `src/executor/robinhood.ts` |
+| **E2B preflight** | Momentum backtest + quarter-Kelly sizing + liquidity depth check run before every entry (Python templates in `e2b/templates/`, identical TS twins locally). | `src/e2b/analysis.ts` |
+| **TimescaleDB candles** | `candles` hypertable (auto-created when the extension exists) fed by the ingest process; `price:<sym>` hot cache in Redis. | `src/market/` |
+| **Backtest replay** | Replays historical signals through the backtest engine into `backtest_runs`; aggregates print to the console and power `/evaluation`. | `pnpm replay` |
+| **Evaluation dashboard** | Backtest comparison across strategy versions (win rate / Sharpe / drawdown meters). | `/evaluation` |
+| **TUI** | Ink multi-panel terminal: price feed, open positions, static alert stream — over plain SSH. | `pnpm tui` |
+| **Docker Compose P4** | Full service isolation: 10 services incl. TimescaleDB, `restart: unless-stopped`, noeviction Redis. | `docker-compose.prod.yml` |
+| **Fine-tuning export** | SFT JSONL dataset from closed positions with clear outcomes + risk-block augmentations; registers the dataset version in `model_evals`. | `pnpm ft:export` |
+
+Secret management follows BLUEPRINT §12.1 — see [docs/SECURITY.md](docs/SECURITY.md) for the sops + age workflow.
 
 ---
 
