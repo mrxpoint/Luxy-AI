@@ -39,15 +39,18 @@
     "bs58": "^6.0.0",
     "bullmq": "^5.12.0",
     "grammy": "^1.30.0",
+    "ink": "5",
     "ioredis": "^5.4.1",
     "pg": "^8.12.0",
     "pino": "^9.3.2",
+    "react": "^18.3.1",
     "viem": "^2.56.3",
     "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/node": "^22.5.0",
     "@types/pg": "^8.11.6",
+    "@types/react": "^18.3.31",
     "pino-pretty": "^11.2.2",
     "prettier": "^3.3.3",
     "tsx": "^4.17.0",
