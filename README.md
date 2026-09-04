@@ -265,8 +265,9 @@ TELEGRAM_CHAT_ID=your_chat_id
 
 - [x] **Phase 1** — Meme Agent (Solana), Screener, Luxy Chat, Web UI, Telegram Bot
 - [x] **Phase 2** — Perps Agent (Hyperliquid), LP Agent (Meteora DLMM Hunter/Healer/HiveMind), Narrative Agent
-- [ ] **Phase 3** — Multichain EVM (Base/Ethereum), Polymarket, Strategy self-tuning, E2B terminal integration
-- [ ] **Phase 4** — Custom fine-tuned model, Docker Compose, TUI, Backtesting engine
+- [x] **Phase 3** — Multichain EVM (Base/Ethereum), Polymarket, Robinhood, Strategy self-tuning, E2B terminal integration
+- [x] **Phase 4** — Docker Compose, TUI, Backtesting engine, TimescaleDB, evaluation dashboard, SFT dataset pipeline (custom model training deferred — any OpenAI-compatible endpoint plugs in via `LUXY_LLM_PROVIDER`)
+- [x] **Live trading paths** — Jupiter swap signing, Hyperliquid EIP-712 orders, Uniswap live swaps, Polymarket CLOB v2 orders (L1/L2 auth + POLY_1271), live interlock (`DRY_RUN=false` + `LIVE_CONFIRM=yes`), preflight + healthcheck + deploy tooling — see [docs/DEPLOY.md](docs/DEPLOY.md)
 
 See [BLUEPRINT.md](BLUEPRINT.md) for the full detailed technical specification.
 
@@ -328,6 +329,8 @@ Beyond the core Phase 1–2 runtime, the blueprint's full scope is implemented:
 | **TUI** | Ink multi-panel terminal: price feed, open positions, static alert stream — over plain SSH. | `pnpm tui` |
 | **Docker Compose P4** | Full service isolation: 10 services incl. TimescaleDB, `restart: unless-stopped`, noeviction Redis. | `docker-compose.prod.yml` |
 | **Fine-tuning export** | SFT JSONL dataset from closed positions with clear outcomes + risk-block augmentations; registers the dataset version in `model_evals`. | `pnpm ft:export` |
+| **Live execution** | Real signed orders on every venue: Jupiter swap txs, Hyperliquid EIP-712 `/exchange`, Uniswap SwapRouter02 (entries + reverse exits), Polymarket CLOB order-v2 (EIP-712 + L2 HMAC, POLY_1271 deposit-wallet flow). Gated by the `DRY_RUN=false` + `LIVE_CONFIRM=yes` interlock; live closes reverse the recorded entry fill or fail loud. | `src/agents/perps/signing.ts` · `src/agents/polymarket/clob.ts` · `src/executor/` |
+| **Deploy & go-live tooling** | `scripts/deploy.sh` VPS bootstrap, `pnpm healthcheck`, `pnpm preflight:live` per-venue funding/allowance/registration checks, live signature self-tests against mainnet, full runbook. | `scripts/` · [docs/DEPLOY.md](docs/DEPLOY.md) |
 
 Secret management follows BLUEPRINT §12.1 — see [docs/SECURITY.md](docs/SECURITY.md) for the sops + age workflow.
 

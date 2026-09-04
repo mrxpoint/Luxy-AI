@@ -1122,13 +1122,13 @@ services:
 ### Phase 3 — Multichain + Prediction Market
 
 **Target deliverables:**
-- [ ] Meme Agent EVM: Base + Ethereum support (DexScreener + Uniswap v3)
-- [ ] LP Agent EVM: Uniswap v3/v4 Hunter/Healer with gas cost optimizer
-- [ ] Prediction Market Agent: Polymarket CLOB API (GTC/GTD orders)
-- [ ] **E2B Terminal Integration:** sandboxed Python executor per agent session
-- [ ] Strategy self-tuning: Luxy proposes → user approves → new version in strategy_config
-- [ ] Robinhood Crypto API: Ed25519-signed orders for US crypto markets
-- [ ] Web UI additions: Positions history + Strategy Config versioning page
+- [x] Meme Agent EVM: Base + Ethereum support (DexScreener + Uniswap v3)
+- [x] LP Agent EVM: Uniswap v3 Hunter/Healer with gas cost optimizer (v4 quoter/execution deferred — v3 verified live first)
+- [x] Prediction Market Agent: Polymarket CLOB API (GTC/GTD orders; order format v2, L1/L2 auth, POLY_1271 deposit-wallet flow)
+- [x] **E2B Terminal Integration:** sandboxed Python executor per agent session
+- [x] Strategy self-tuning: Luxy proposes → user approves → new version in strategy_config
+- [x] Robinhood Crypto API: Ed25519-signed orders for US crypto markets
+- [x] Web UI additions: Positions history + Strategy Config versioning page
 
 **E2B integration specifics:**
 - Custom E2B template with pandas, numpy, ta, scikit-learn
@@ -1140,16 +1140,21 @@ services:
 ### Phase 4 — Production Scale + Fine-Tuned Model
 
 **Target deliverables:**
-- [ ] Docker Compose: full service isolation per process
-- [ ] TUI: Ink multi-panel terminal (prices + positions + alerts)
-- [ ] Backtesting engine: replay historical signals from `signals` table
-- [ ] **Custom fine-tuned model:** Qwen-2.5-7B-Instruct via QLoRA on Axolotl
-  - Training data: 60+ days of Luxy session logs + labeled outcomes
-  - Self-hosted via vLLM (OpenAI-compatible endpoint)
-  - Drop-in via `LUXY_LLM_PROVIDER=local`
-- [ ] TimescaleDB: OHLCV hypertable for efficient time-series queries
-- [ ] Strategy evaluation dashboard: backtest comparison across versions
-- [ ] Multi-VPS: separate DB VPS when system grows beyond single node
+- [x] Docker Compose: full service isolation per process
+- [x] TUI: Ink multi-panel terminal (prices + positions + alerts)
+- [x] Backtesting engine: replay historical signals from `signals` table
+- [x] Custom fine-tuned model — **deferred by decision**: the training-data pipeline (`pnpm ft:export` → JSONL SFT + `model_evals` registration) runs from day one, and any fine-tuned or third-party model plugs in via the OpenAI-compatible adapter (`LUXY_LLM_PROVIDER=openai|openrouter|local`). A QLoRA/Axolotl training run remains an option once 60+ days of labeled sessions exist.
+- [x] TimescaleDB: OHLCV hypertable for efficient time-series queries
+- [x] Strategy evaluation dashboard: backtest comparison across versions
+- [ ] Multi-VPS: separate DB VPS when system grows beyond single node (operational step, not code)
+
+**Live-trading enablement (all phases):**
+- [x] Hyperliquid EIP-712 order signing (msgpack action hash + Agent phantom payload — verified against mainnet signature checking)
+- [x] Jupiter v6 swap build/sign/submit with the agent keypair
+- [x] Uniswap SwapRouter02 live swaps (entries + reverse exits, never auto-approving allowances)
+- [x] Polymarket CLOB live orders (L1 ClobAuth → L2 HMAC → order-v2 EIP-712, incl. deposit-wallet flow)
+- [x] Global interlock: `DRY_RUN=false` + `LIVE_CONFIRM=yes` required to boot live
+- [x] `scripts/preflight-live.ts`, `scripts/healthcheck.ts`, `scripts/deploy.sh`, [docs/DEPLOY.md](docs/DEPLOY.md)
 
 ---
 
