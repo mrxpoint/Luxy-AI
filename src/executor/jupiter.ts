@@ -6,10 +6,17 @@
  *
  * In DRY_RUN no transaction is ever built or sent — fills are simulated at
  * the quoted price with the quoted slippage so PnL accounting behaves
- * realistically.
+ * realistically. LIVE builds the swap transaction from the quote, signs it
+ * locally with the agent keypair (SOLANA_PRIVATE_KEY, base58 — the exact
+ * format `pnpm bootstrap-wallet` prints) and submits it via RPC.
  */
+import { Connection, Keypair, VersionedTransaction } from '@solana/web3.js';
+import bs58 from 'bs58';
 import { config } from '../config/index.js';
-import { getJson } from '../utils/http.js';
+import { getJson, postJson } from '../utils/http.js';
+import { logger } from '../utils/logger.js';
+
+const log = logger.child({ module: 'jupiter' });
 
 export interface JupiterQuote {
   inputMint: string;
@@ -42,27 +49,56 @@ export function quoteSlippage(q: JupiterQuote): number {
   return Number(q.priceImpactPct ?? '0');
 }
 
+/** Decode the agent keypair from SOLANA_PRIVATE_KEY (base58 or [int] JSON). */
+export function loadAgentKeypair(): Keypair {
+  const raw = config.SOLANA_PRIVATE_KEY;
+  if (!raw) throw new Error('SOLANA_PRIVATE_KEY not set — run `pnpm bootstrap-wallet` and store the secret in sops');
+  if (raw.trim().startsWith('[')) {
+    return Keypair.fromSecretKey(Uint8Array.from(JSON.parse(raw.trim())));
+  }
+  return Keypair.fromSecretKey(bs58.decode(raw.trim()));
+}
+
 /**
  * Simulated or real execution.
  * DRY_RUN: returns a synthetic fill record derived from the quote.
- * LIVE: (Phase 1 stub — requires funded keypair; guarded, never silent.)
+ * LIVE: builds + signs the Jupiter swap transaction and submits it on-chain.
  */
 export async function executeSwap(
   quote: JupiterQuote,
   dryRun: boolean,
-): Promise<{ signature: string | null; filled: boolean; note: string }> {
+): Promise<{ signature: string | null; filled: boolean; note: string; outAmount?: string }> {
   if (dryRun) {
     return {
       signature: null,
       filled: true,
+      outAmount: quote.outAmount,
       note: `dry-run fill at quoted outAmount=${quote.outAmount} (impact ${(Number(quote.priceImpactPct) * 100).toFixed(2)}%)`,
     };
   }
-  // Live swap requires building + signing the Jupiter swap transaction with
-  // the agent wallet keypair (sops-encrypted secret). Deliberately left as a
-  // hard stop so an accidental DRY_RUN=false without key management in place
-  // can never move funds.
-  throw new Error(
-    'live Jupiter swap not enabled in this build — provision wallets and enable signing first',
-  );
+
+  const keypair = loadAgentKeypair();
+  // Build the swap transaction with Jupiter (aggregator handles routing,
+  // ATA creation and SOL wrapping); we only ever sign locally.
+  const swapResponse = await postJson<{ swapTransaction: string }>(`${config.JUPITER_API_BASE}/swap`, {
+    quoteResponse: quote,
+    userPublicKey: keypair.publicKey.toBase58(),
+    wrapAndUnwrapSol: true,
+    dynamicComputeUnitLimit: true,
+    prioritizationFeeLamports: { priorityLevelWithMaxLamports: { priorityLevel: 'high', maxLamports: 1_000_000 } },
+  });
+
+  const tx = VersionedTransaction.deserialize(Buffer.from(swapResponse.swapTransaction, 'base64'));
+  tx.sign([keypair]);
+
+  const connection = new Connection(config.SOLANA_RPC_URL, 'confirmed');
+  const signature = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false });
+  log.info({ signature }, 'jupiter swap submitted');
+  await connection.confirmTransaction(signature, 'confirmed');
+  return {
+    signature,
+    filled: true,
+    outAmount: quote.outAmount,
+    note: `live jupiter swap ${signature}`,
+  };
 }
