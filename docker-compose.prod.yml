@@ -1,0 +1,132 @@
+# Luxy AI — Phase 4 full service isolation (BLUEPRINT.md §13.2)
+#
+# Every process in its own container, restart: unless-stopped, TimescaleDB
+# for the candles hypertable, Redis with noeviction (never drop queue jobs).
+#
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# All services read env from .env (same file as the PM2 deployment).
+
+x-service: &service
+  build:
+    context: .
+    target: service
+  restart: unless-stopped
+  env_file: .env
+  environment:
+    DATABASE_URL: postgresql://luxy:${POSTGRES_PASSWORD:-luxy_dev_password}@db:5432/luxydb
+    REDIS_URL: redis://cache:6379
+  depends_on:
+    db:
+      condition: service_healthy
+    cache:
+      condition: service_healthy
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "3" }
+
+services:
+  screener:
+    <<: *service
+    command: pnpm dev:screener
+    container_name: luxy-screener
+
+  executor:
+    <<: *service
+    command: pnpm dev:executor
+    container_name: luxy-executor
+
+  luxy-agent:
+    <<: *service
+    command: pnpm dev:agent
+    container_name: luxy-agent
+
+  perps-agent:
+    <<: *service
+    command: pnpm dev:perps
+    container_name: luxy-perps
+
+  lp-agent:
+    <<: *service
+    command: pnpm dev:lp
+    container_name: luxy-lp
+
+  narrative-agent:
+    <<: *service
+    command: pnpm dev:narrative
+    container_name: luxy-narrative
+
+  polymarket-agent:
+    <<: *service
+    command: pnpm dev:polymarket
+    container_name: luxy-polymarket
+
+  candle-ingest:
+    <<: *service
+    command: pnpm dev:candles
+    container_name: luxy-candles
+
+  telegram-bot:
+    <<: *service
+    command: pnpm dev:telegram
+    container_name: luxy-telegram
+
+  web:
+    build:
+      context: .
+      target: web
+    container_name: luxy-web
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://luxy:${POSTGRES_PASSWORD:-luxy_dev_password}@db:5432/luxydb
+      REDIS_URL: redis://cache:6379
+    ports:
+      - "3000:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+      cache:
+        condition: service_healthy
+
+  db:
+    # timescale image = postgres 16 + the timescaledb extension; the schema
+    # auto-converts `candles` to a hypertable when the extension is present.
+    image: timescale/timescaledb:latest-pg16
+    container_name: luxy-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: luxy
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-luxy_dev_password}
+      POSTGRES_DB: luxydb
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U luxy -d luxydb"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  cache:
+    image: redis:7-alpine
+    container_name: luxy-redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --maxmemory 512mb
+      --maxmemory-policy noeviction
+      --appendonly yes
+      --save 900 1
+      --save 300 10
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pg-data:
+  redis-data:

@@ -165,8 +165,9 @@ This means the agent doesn't just reason about trades — it **validates them in
 | Solana Meme Tokens | Alpha | DexScreener + Birdeye + Helius |
 | Solana LP (Meteora DLMM) | Alpha | Hunter/Healer/HiveMind pattern |
 | Hyperliquid Perps | Alpha (dry-run) | EIP-712 signing, 10 major markets |
-| Base/Ethereum (EVM) | Roadmap | Phase 3 |
-| Polymarket Prediction | Roadmap | Phase 3 |
+| Base/Ethereum (EVM) | Alpha (dry-run) | Uniswap v3 screener + executor, gas-aware LP |
+| Polymarket Prediction | Alpha (dry-run) | Gamma + CLOB, LLM edge detection, GTC/GTD |
+| Robinhood Crypto | Alpha (dry-run) | Ed25519-signed US crypto orders |
 
 ---
 
@@ -187,31 +188,43 @@ This means the agent doesn't just reason about trades — it **validates them in
 git clone https://github.com/mrxpoint/Luxy-AI.git
 cd Luxy-AI
 
-# 2. Install dependencies
+# 2. Start Postgres 16 + Redis 7 (local dev infra)
+docker compose up -d
+
+# 3. Install dependencies
 pnpm install
 
-# 3. Configure environment
+# 4. Configure environment
 cp .env.example .env
-# Edit .env with your API keys
+# Edit .env with your API keys (everything works in dry-run with keys empty)
 
-# 4. Run DB migrations
+# 5. Run DB migrations
 pnpm db:migrate
 
-# 5. Bootstrap wallets (one-time, manual)
+# 6. Bootstrap wallets (one-time, manual)
 pnpm bootstrap-wallet --agent=meme --chain=solana
 pnpm bootstrap-wallet --agent=lp --chain=solana
 
-# 6. Start all processes (development)
+# 7. Start all processes (development)
 pnpm dev:screener    # Meme agent screener
 pnpm dev:executor    # Order executor + risk guard
 pnpm dev:agent       # Luxy main agent
-pnpm dev:telegram    # Telegram bot
+pnpm dev:perps       # Hyperliquid perps agent
+pnpm dev:lp          # LP agent (Hunter/Healer/HiveMind)
+pnpm dev:narrative   # Reddit + Telegram narrative agent
+pnpm dev:telegram    # Telegram bot + notifications
+pnpm dev:web         # Next.js web UI on http://localhost:3000
 
 # OR: Start all with PM2 (production)
 pm2 start ecosystem.config.cjs --env production
 pm2 save
 pm2 startup
 ```
+
+> **Dry-run first.** `DRY_RUN=true` (the default) simulates every fill end-to-end —
+> screeners, backtests, risk checks, positions and PnL all work without wallets,
+> API keys, or real funds. Live execution paths fail loudly until wallet signing
+> is provisioned (see BLUEPRINT.md §12).
 
 ### Environment Variables
 
@@ -252,8 +265,9 @@ TELEGRAM_CHAT_ID=your_chat_id
 
 - [x] **Phase 1** — Meme Agent (Solana), Screener, Luxy Chat, Web UI, Telegram Bot
 - [x] **Phase 2** — Perps Agent (Hyperliquid), LP Agent (Meteora DLMM Hunter/Healer/HiveMind), Narrative Agent
-- [ ] **Phase 3** — Multichain EVM (Base/Ethereum), Polymarket, Strategy self-tuning, E2B terminal integration
-- [ ] **Phase 4** — Custom fine-tuned model, Docker Compose, TUI, Backtesting engine
+- [x] **Phase 3** — Multichain EVM (Base/Ethereum), Polymarket, Robinhood, Strategy self-tuning, E2B terminal integration
+- [x] **Phase 4** — Docker Compose, TUI, Backtesting engine, TimescaleDB, evaluation dashboard, SFT dataset pipeline (custom model training deferred — any OpenAI-compatible endpoint plugs in via `LUXY_LLM_PROVIDER`)
+- [x] **Live trading paths** — Jupiter swap signing, Hyperliquid EIP-712 orders, Uniswap live swaps, Polymarket CLOB v2 orders (L1/L2 auth + POLY_1271), live interlock (`DRY_RUN=false` + `LIVE_CONFIRM=yes`), preflight + healthcheck + deploy tooling — see [docs/DEPLOY.md](docs/DEPLOY.md)
 
 See [BLUEPRINT.md](BLUEPRINT.md) for the full detailed technical specification.
 
@@ -268,23 +282,57 @@ luxy-ai/
 │   ├── db/              # PostgreSQL pool + audit helper
 │   ├── redis/           # BullMQ queues
 │   ├── llm/             # Provider-agnostic LLM adapter
-│   ├── e2b/             # E2B sandbox terminal integration
-│   ├── screener/        # Meme Agent screener (DexScreener, Birdeye, Helius)
-│   ├── executor/        # Risk guard + Jupiter executor + BullMQ worker
+│   ├── e2b/             # E2B sandbox terminal + kelly/liquidity preflight
+│   ├── screener/        # Meme screener — Solana + Base + Ethereum
+│   ├── strategy/        # Self-tuning: propose → approve → version (§5.3)
+│   ├── market/          # TimescaleDB candle store + OHLCV ingest (§8.1)
+│   ├── executor/        # Risk guard + Jupiter/Uniswap/Polymarket/Robinhood
+│   ├── tui/             # Ink terminal monitor (§10.3)
 │   └── agents/
-│       ├── luxy/        # Main agent (Anthropic direct)
+│       ├── luxy/        # Main agent + strategy tuning pass
 │       ├── perps/       # Hyperliquid perps agent
-│       ├── lp/          # LP Agent (Meteora DLMM Hunter/Healer/HiveMind)
+│       ├── lp/          # Meteora Hunter/Healer/HiveMind + evm/ (Uniswap v3)
+│       ├── polymarket/  # Prediction-market edge agent
 │       └── narrative/   # Reddit + Telegram narrative scraper
 ├── apps/
-│   └── web/             # Next.js 15 web UI
+│   └── web/             # Next.js 15 web UI (+ /evaluation dashboard)
 ├── db/
-│   └── schema.sql       # PostgreSQL schema
+│   └── schema.sql       # PostgreSQL schema (incl. candles hypertable)
+├── e2b/
+│   └── templates/       # Custom sandbox template + Python analysis templates
 ├── scripts/
 │   ├── migrate.ts
-│   └── bootstrap-wallet.ts
+│   ├── bootstrap-wallet.ts
+│   ├── replay-signals.ts # Backtest replay engine (P4)
+│   └── export-training-data.ts # Fine-tuning SFT export (§11)
+├── docker-compose.prod.yml # Phase 4 full service isolation
 └── ecosystem.config.cjs # PM2 multi-process config
 ```
+
+---
+
+## Phase 3/4 Modules
+
+Beyond the core Phase 1–2 runtime, the blueprint's full scope is implemented:
+
+| Module | What it does | Where |
+|---|---|---|
+| **Strategy self-tuning** | Luxy drafts conservative param proposals from closed-position outcomes; approve/reject via Telegram (`/proposals` `/approve <id>` `/reject <id>`) or the Strategy page. Versions are never overwritten. | `src/strategy/` · `/strategy` |
+| **EVM meme trading** | Multi-chain screener (Solana + Base + Ethereum via DexScreener) and a Uniswap v3 executor with REAL QuoterV2 quotes feeding the risk guard. Live signing is fail-loud until provisioned. | `src/screener/` · `src/executor/uniswap.ts` |
+| **Uniswap v3 LP** | Hunter/Healer over The Graph subgraph with the gas cost optimizer: a redeploy is skipped when gas > expected fee gain (open question #6). Enable with `LP_EVM_ENABLED=true`. | `src/agents/lp/evm/` |
+| **Polymarket agent** | Gamma market discovery → Tier-2 LLM probability estimate → edge vs CLOB midpoint → GTC/GTD intents when edge ≥ 8¢. | `src/agents/polymarket/` |
+| **Robinhood Crypto** | Ed25519-signed orders via `trading.robinhood.com` (node:crypto, no extra deps). | `src/executor/robinhood.ts` |
+| **E2B preflight** | Momentum backtest + quarter-Kelly sizing + liquidity depth check run before every entry (Python templates in `e2b/templates/`, identical TS twins locally). | `src/e2b/analysis.ts` |
+| **TimescaleDB candles** | `candles` hypertable (auto-created when the extension exists) fed by the ingest process; `price:<sym>` hot cache in Redis. | `src/market/` |
+| **Backtest replay** | Replays historical signals through the backtest engine into `backtest_runs`; aggregates print to the console and power `/evaluation`. | `pnpm replay` |
+| **Evaluation dashboard** | Backtest comparison across strategy versions (win rate / Sharpe / drawdown meters). | `/evaluation` |
+| **TUI** | Ink multi-panel terminal: price feed, open positions, static alert stream — over plain SSH. | `pnpm tui` |
+| **Docker Compose P4** | Full service isolation: 10 services incl. TimescaleDB, `restart: unless-stopped`, noeviction Redis. | `docker-compose.prod.yml` |
+| **Fine-tuning export** | SFT JSONL dataset from closed positions with clear outcomes + risk-block augmentations; registers the dataset version in `model_evals`. | `pnpm ft:export` |
+| **Live execution** | Real signed orders on every venue: Jupiter swap txs, Hyperliquid EIP-712 `/exchange`, Uniswap SwapRouter02 (entries + reverse exits), Polymarket CLOB order-v2 (EIP-712 + L2 HMAC, POLY_1271 deposit-wallet flow). Gated by the `DRY_RUN=false` + `LIVE_CONFIRM=yes` interlock; live closes reverse the recorded entry fill or fail loud. | `src/agents/perps/signing.ts` · `src/agents/polymarket/clob.ts` · `src/executor/` |
+| **Deploy & go-live tooling** | `scripts/deploy.sh` VPS bootstrap, `pnpm healthcheck`, `pnpm preflight:live` per-venue funding/allowance/registration checks, live signature self-tests against mainnet, full runbook. | `scripts/` · [docs/DEPLOY.md](docs/DEPLOY.md) |
+
+Secret management follows BLUEPRINT §12.1 — see [docs/SECURITY.md](docs/SECURITY.md) for the sops + age workflow.
 
 ---
 
