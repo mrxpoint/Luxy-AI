@@ -13,6 +13,12 @@ const booleanish = z
   .optional()
   .transform((v) => v === 'true' || v === '1' || v === 'yes');
 
+/** DRY_RUN defaults to TRUE when unset — the safe default (BLUEPRINT README). */
+const dryRunBooleanish = z
+  .string()
+  .optional()
+  .transform((v) => !(v === 'false' || v === '0' || v === 'no'));
+
 const num = (def: number) =>
   z
     .string()
@@ -22,7 +28,9 @@ const num = (def: number) =>
 
 const envSchema = z.object({
   // Runtime mode
-  DRY_RUN: booleanish,
+  DRY_RUN: dryRunBooleanish,
+  /** Global live interlock: must be "yes" when DRY_RUN=false (see load()). */
+  LIVE_CONFIRM: z.string().default(''),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
   PAPER_PORTFOLIO_USD: num(2500),
 
@@ -48,6 +56,8 @@ const envSchema = z.object({
 
   // Solana
   SOLANA_RPC_URL: z.string().default('https://api.mainnet-beta.solana.com'),
+  /** Agent wallet secret — base58 (bootstrap-wallet output) or [int] JSON. */
+  SOLANA_PRIVATE_KEY: z.string().default(''),
   HELIUS_API_KEY: z.string().default(''),
   BIRDEYE_API_KEY: z.string().default(''),
 
@@ -74,6 +84,12 @@ const envSchema = z.object({
   POLYMARKET_CLOB_API: z.string().default('https://clob.polymarket.com'),
   POLYMARKET_PRIVATE_KEY: z.string().default(''),
   POLYMARKET_FUNDER_ADDRESS: z.string().default(''),
+  /** Optional pre-provisioned L2 creds (otherwise derived from the key). */
+  POLYMARKET_API_KEY: z.string().default(''),
+  POLYMARKET_API_SECRET: z.string().default(''),
+  POLYMARKET_API_PASSPHRASE: z.string().default(''),
+  /** 0 = EOA funder, 1 = Poly proxy, 2 = Gnosis Safe (Polymarket default). */
+  POLYMARKET_SIGNATURE_TYPE: num(2),
   POLYMARKET_MIN_EDGE: num(0.08),
 
   // Robinhood Crypto (Phase 3 — US crypto markets)
@@ -149,7 +165,29 @@ function load(): AppConfig {
     }
     process.exit(1);
   }
-  return parsed.data;
+  const cfg = parsed.data;
+
+  // ---- Global live-trading interlock (BLUEPRINT §1.2 principle 5) ----
+  // Flipping DRY_RUN=false alone is never enough: live execution additionally
+  // requires LIVE_CONFIRM=yes, so an accidental .env edit cannot move funds.
+  if (!cfg.DRY_RUN && cfg.LIVE_CONFIRM.toLowerCase() !== 'yes') {
+    console.error(
+      [
+        '',
+        '  LIVE TRADING INTERLOCK',
+        '  --------------------------------------------------------------',
+        '  DRY_RUN=false requests LIVE execution, but LIVE_CONFIRM is not set.',
+        '  Set LIVE_CONFIRM=yes in .env to acknowledge you are going live with',
+        '  real funds, provision venue keys (docs/DEPLOY.md §5), and restart.',
+        '',
+        '  Refusing to start — dry-run remains available (DRY_RUN=true).',
+        '  --------------------------------------------------------------',
+        '',
+      ].join('\n'),
+    );
+    process.exit(1);
+  }
+  return cfg;
 }
 
 export const config: AppConfig = load();
