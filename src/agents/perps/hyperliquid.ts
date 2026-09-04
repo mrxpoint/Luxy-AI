@@ -6,13 +6,21 @@
  *   POST /info { type: "candleSnapshot", req: { coin, interval, startTime, endTime } }
  *   POST /info { type: "clearinghouseState", user: address }
  *
- * Orders (POST /exchange, EIP-712 signed) are stubbed: Phase 2 runs in
- * dry-run — the stub records intent-level fills so the whole pipeline is
- * exercisable end-to-end before any live signing is enabled.
+ * Orders (POST /exchange) are EIP-712 signed locally — see ./signing.ts for
+ * the exact spec (mirrors the official Python SDK byte-for-byte).
  */
 import { postJson } from '../../utils/http.js';
 import { config } from '../../config/index.js';
 import type { Candle } from '../../types/index.js';
+import {
+  describeStatuses,
+  postSignedOrder,
+  resolveAsset,
+  floatToWire,
+  roundPx,
+  roundSz,
+  type HLOrderWire,
+} from './signing.js';
 
 const BASE = config.HYPERLIQUID_API_URL;
 
@@ -74,15 +82,47 @@ export async function fetchUserPositions(address: string): Promise<HyperliquidPo
 
 /**
  * Order execution — dry-run aware (BLUEPRINT §6.4: EIP-712 signed at executor).
- * DRY_RUN: simulates the fill. LIVE: hard stop until signing is provisioned
- * (identical safety stance to the Jupiter path).
+ *
+ * LIVE: EIP-712-signed IoC limit orders priced 2% through the mid (marketable
+ * enough for a $200-capped book, priced enough to avoid crossing a full
+ * ladder). Exits are reduce-only and sized from the exchange position, not
+ * from bookkeeping.
  */
-export async function hyperliquidExecute(intent: {
-  action: string;
+
+/** IoC limit price offset through the mid. */
+const IOC_THROUGH_MID = 0.02;
+
+export interface HLIntent {
+  action: string; // entry | exit
   market?: string;
   side?: 'long' | 'short';
   sizeUsd?: number;
-}): Promise<{ filled: boolean; note: string }> {
+  reasoning?: string;
+}
+
+async function liveOrder(coin: string, isBuy: boolean, sz: number, mid: number, reduceOnly: boolean): Promise<string> {
+  const { index, szDecimals } = await resolveAsset(coin);
+  const px = roundPx(mid * (1 + (isBuy ? IOC_THROUGH_MID : -IOC_THROUGH_MID)), szDecimals);
+  const wire: HLOrderWire = {
+    a: index,
+    b: isBuy,
+    p: floatToWire(px),
+    s: floatToWire(roundSz(sz, szDecimals)),
+    r: reduceOnly,
+    t: { limit: { tif: 'Ioc' } },
+  };
+  if (!config.HYPERLIQUID_PRIVATE_KEY) {
+    throw new Error('hyperliquid live trading requires HYPERLIQUID_PRIVATE_KEY (sops-encrypted)');
+  }
+  const res = await postSignedOrder(config.HYPERLIQUID_PRIVATE_KEY, [wire]);
+  const summary = describeStatuses(res);
+  if (res.status !== 'ok' || summary.includes('error:')) {
+    throw new Error(`hyperliquid order rejected — ${summary}`);
+  }
+  return summary;
+}
+
+export async function hyperliquidExecute(intent: HLIntent): Promise<{ filled: boolean; note: string }> {
   if (config.DRY_RUN) {
     return {
       filled: true,
@@ -92,7 +132,33 @@ export async function hyperliquidExecute(intent: {
   if (!config.HYPERLIQUID_PRIVATE_KEY || !config.HYPERLIQUID_WALLET_ADDRESS) {
     throw new Error('hyperliquid live trading requires wallet provisioning (sops-encrypted key)');
   }
-  // EIP-712 signing arrives with the live-trading enablement milestone;
-  // failing loudly here is safer than a partial signing implementation.
-  throw new Error('live hyperliquid signing not enabled in this build');
+  const coin = intent.market;
+  if (!coin) throw new Error('hyperliquid intent missing market');
+
+  if (intent.action === 'exit') {
+    // Close the FULL live position — size comes from the exchange itself.
+    const positions = await fetchUserPositions(config.HYPERLIQUID_WALLET_ADDRESS);
+    const pos = positions.find((p) => p.coin === coin);
+    if (!pos || Math.abs(pos.szi) < 1e-12) {
+      return { filled: false, note: `no live ${coin} position to close` };
+    }
+    const mids = await fetchAllMids();
+    const mid = Number(mids[coin]);
+    if (!Number.isFinite(mid) || mid <= 0) throw new Error(`no mid for ${coin}`);
+    const note = await liveOrder(coin, pos.szi < 0, Math.abs(pos.szi), mid, true);
+    return { filled: true, note: `live reduce-only close — ${note}` };
+  }
+
+  // Entry: long → buy, short → sell.
+  const sizeUsd = intent.sizeUsd ?? 0;
+  if (sizeUsd <= 0) throw new Error('hyperliquid entry missing sizeUsd');
+  const mids = await fetchAllMids();
+  const mid = Number(mids[coin]);
+  if (!Number.isFinite(mid) || mid <= 0) throw new Error(`no mid for ${coin}`);
+  const { szDecimals } = await resolveAsset(coin);
+  const px = roundPx(mid * (1 + (intent.side === 'short' ? -IOC_THROUGH_MID : IOC_THROUGH_MID)), szDecimals);
+  const sz = roundSz(sizeUsd / px, szDecimals);
+  if (sz <= 0) throw new Error(`size rounds to zero (${coin} szDecimals=${szDecimals}, $${sizeUsd})`);
+  const note = await liveOrder(coin, intent.side !== 'short', sz, mid, false);
+  return { filled: true, note: `live entry — ${note}` };
 }
