@@ -141,9 +141,10 @@ export interface UniswapFillResult {
 }
 
 /**
- * Swap exact-in USDC → token via SwapRouter02 `exactInput` (same path
- * encoding as the verified quote). Live path verifies allowance first and
- * NEVER opens it automatically.
+ * Swap exact-in via SwapRouter02 `exactInput` (same path encoding as the
+ * verified quote). Defaults to USDC → token (entries); pass `tokenIn` to
+ * swap the reverse direction (live exits). Live path verifies allowance
+ * first and NEVER opens it automatically.
  */
 export async function uniswapExecute(input: {
   chain: 'base' | 'ethereum';
@@ -152,12 +153,17 @@ export async function uniswapExecute(input: {
   maxSlippagePct: number;
   dryRun: boolean;
   feeTier?: number;
+  /** Override the input token (defaults to USDC). `sizeUsd` stays the notional. */
+  tokenIn?: Address;
+  /** Exact input amount in tokenIn base units (overrides the sizeUsd derivation). */
+  amountInRaw?: bigint;
 }): Promise<UniswapFillResult> {
   const { chain, tokenOut, sizeUsd, maxSlippagePct, dryRun } = input;
   const feeTier = input.feeTier ?? 3000;
-  const tokenIn = EVM_TOKENS[chain].usdc;
+  const tokenIn = input.tokenIn ?? EVM_TOKENS[chain].usdc;
+  const amountIn = input.amountInRaw ?? BigInt(Math.round(sizeUsd * 1e6));
 
-  const quote = await uniswapQuote(chain, tokenIn, tokenOut, BigInt(Math.round(sizeUsd * 1e6)), feeTier);
+  const quote = await uniswapQuote(chain, tokenIn, tokenOut, amountIn, feeTier);
   if (quote.priceImpactPct > maxSlippagePct) {
     throw new Error(
       `uniswap quote impact ${(quote.priceImpactPct * 100).toFixed(2)}% exceeds ${(maxSlippagePct * 100).toFixed(1)}% cap`,
@@ -197,10 +203,9 @@ export async function uniswapExecute(input: {
     functionName: 'allowance',
     args: [account.address, router],
   });
-  const needed = BigInt(Math.round(sizeUsd * 1e6));
-  if (allowance < needed) {
+  if (allowance < amountIn) {
     throw new Error(
-      `USDC allowance to SwapRouter02 too low (${allowance} < ${needed}) — approve manually first; the executor never auto-approves spends`,
+      `${tokenIn} allowance to SwapRouter02 too low (${allowance} < ${amountIn}) — approve manually first; the executor never auto-approves spends`,
     );
   }
 
@@ -218,7 +223,7 @@ export async function uniswapExecute(input: {
         path: buildPath(tokenIn, feeTier, tokenOut),
         recipient: account.address,
         deadline: BigInt(Math.floor(Date.now() / 1000) + 120),
-        amountIn: needed,
+        amountIn,
         amountOutMinimum: minOut,
       },
     ],

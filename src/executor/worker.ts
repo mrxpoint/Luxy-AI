@@ -15,10 +15,9 @@ import type { LuxyIntent } from '../types/index.js';
 import { runAllChecks } from './risk-guard.js';
 import { getQuote, quoteSlippage, executeSwap, USDC_MINT, SOL_MINT } from './jupiter.js';
 import { uniswapQuote, uniswapExecute, EVM_TOKENS, type UniswapQuote } from './uniswap.js';
-import { hyperliquidExecute } from '../agents/perps/hyperliquid.js';
+import { hyperliquidExecute, fetchUserPositions } from '../agents/perps/hyperliquid.js';
 import { robinhoodExecute } from './robinhood.js';
 import { polymarketExecute } from '../agents/polymarket/executor.js';
-
 const log = logger.child({ module: 'executor' });
 
 const MINT_DECIMALS: Record<string, number> = {
@@ -86,7 +85,8 @@ async function processIntent(job: Job<LuxyIntent>): Promise<{ status: string; no
   // ---- Execute per chain ----
   if (intent.action === 'entry') {
     if (intent.chain === 'hyperliquid') {
-      await hyperliquidExecute(intent);
+      const fill = await hyperliquidExecute(intent);
+      await insertPosition(intent, null, fill.note);
     } else if (intent.chain === 'solana') {
       const amountRaw = Math.round((intent.sizeUsd ?? 0) * 10 ** 6);
       const quote = await getQuote(
@@ -96,9 +96,9 @@ async function processIntent(job: Job<LuxyIntent>): Promise<{ status: string; no
         Math.round(config.RISK_MAX_SLIPPAGE_PCT * 10_000),
       );
       const fill = await executeSwap(quote, config.DRY_RUN);
-      await insertPosition(intent, fill.signature, fill.note);
+      await insertPosition(intent, fill.signature, fill.note, { outAmount: fill.outAmount });
     } else if (intent.chain === 'base' || intent.chain === 'ethereum') {
-      // Phase 3: Uniswap v3 quoted path (dry-run simulated, live fail-loud).
+      // Phase 3: Uniswap v3 quoted path (dry-run simulated, live signed).
       const fill = await uniswapExecute({
         chain: intent.chain,
         tokenOut: intent.token as `0x${string}`,
@@ -106,15 +106,15 @@ async function processIntent(job: Job<LuxyIntent>): Promise<{ status: string; no
         maxSlippagePct: config.RISK_MAX_SLIPPAGE_PCT,
         dryRun: config.DRY_RUN,
       });
-      await insertPosition(intent, fill.txHash, fill.note);
+      await insertPosition(intent, fill.txHash, fill.note, { outRaw: fill.outRaw });
     } else if (intent.chain === 'robinhood') {
       // Phase 3: Robinhood Crypto (Ed25519-signed; dry-run simulated).
       const fill = await robinhoodExecute(intent);
       await insertPosition(intent, fill.orderId, fill.note);
     } else if (intent.chain === 'polymarket') {
-      // Phase 3: Polymarket CLOB (GTC/GTD; dry-run simulated).
+      // Phase 3: Polymarket CLOB (GTC/GTD; dry-run simulated, live signed).
       const fill = await polymarketExecute(intent);
-      await insertPosition(intent, fill.orderId, fill.note);
+      await insertPosition(intent, fill.orderId, fill.note, { shares: fill.shares });
     } else {
       await insertPosition(intent, null, 'dry-run fill (unhandled chain)');
     }
@@ -127,7 +127,7 @@ async function processIntent(job: Job<LuxyIntent>): Promise<{ status: string; no
   }
 
   if (intent.action === 'exit') {
-    const closed = await closePosition(intent);
+    const closed = await executeLiveClose(intent);
     await audit('executor', 'exit', { intent, closed });
     if (closed) {
       await notify(
@@ -147,7 +147,19 @@ interface JupiterQuoteLite {
   priceImpactPct: string;
 }
 
-async function insertPosition(intent: LuxyIntent, signature: string | null, note: string): Promise<void> {
+/** Fill metadata stashed on the position row for live exits. */
+interface FillMeta {
+  outAmount?: string; // solana: output token base units received at entry
+  outRaw?: string; // evm: output token raw units received at entry
+  shares?: number; // polymarket: shares bought at entry
+}
+
+async function insertPosition(
+  intent: LuxyIntent,
+  signature: string | null,
+  note: string,
+  fill?: FillMeta,
+): Promise<void> {
   const quote = (intent as LuxyIntent & { _quote?: JupiterQuoteLite })._quote;
   const entryPrice = deriveEntryPrice(intent, quote);
   await query(
@@ -163,7 +175,7 @@ async function insertPosition(intent: LuxyIntent, signature: string | null, note
       entryPrice,
       signature,
       config.DRY_RUN,
-      JSON.stringify({ ...intent, executionNote: note }),
+      JSON.stringify({ ...intent, executionNote: note, fill: fill ?? null }),
     ],
   );
   log.info({ note }, 'position opened');
@@ -177,17 +189,19 @@ function deriveEntryPrice(intent: LuxyIntent, quote?: JupiterQuoteLite): number 
   return null;
 }
 
-async function closePosition(
-  intent: LuxyIntent,
-): Promise<{ pnl_usd: number; pnl_pct: number; symbol?: string; token?: string } | null> {
-  const res = await query<{
-    id: number;
-    token: string | null;
-    symbol: string | null;
-    size_usd: number;
-    entry_price: number | null;
-  }>(
-    `SELECT p.id, p.token, p.size_usd, p.entry_price,
+interface OpenPositionRow {
+  id: number;
+  chain: string;
+  token: string | null;
+  size_usd: number;
+  entry_price: number | null;
+  intent: { fill?: FillMeta } | null;
+  symbol?: string | null;
+}
+
+async function findOpenPosition(intent: LuxyIntent): Promise<OpenPositionRow | null> {
+  const res = await query<OpenPositionRow>(
+    `SELECT p.id, p.chain, p.token, p.size_usd, p.entry_price, p.intent,
             (s.raw_data->>'baseToken'->>'symbol') AS symbol
      FROM positions p
      LEFT JOIN LATERAL (
@@ -199,21 +213,116 @@ async function closePosition(
      LIMIT 1`,
     [intent.agent, intent.chain, intent.token ?? null],
   );
-  const row = res.rows[0];
-  if (!row) return null;
+  return res.rows[0] ?? null;
+}
 
-  // Dry-run close: assume current price ≈ entry ± last known price change.
-  // Live close would fetch the real exit quote; both paths record the PnL.
-  const pnlPct = estimateClosePnlPct(intent);
-  const pnlUsd = row.size_usd * pnlPct;
-
+async function markClosed(
+  row: OpenPositionRow,
+  pnlUsd: number,
+  exitPrice: number | null,
+): Promise<void> {
+  const pnlPct = row.size_usd > 0 ? pnlUsd / row.size_usd : 0;
   await query(
     `UPDATE positions
-     SET status = 'closed', exit_price = entry_price * (1 + $2), pnl_usd = $3, pnl_pct = $2, closed_at = NOW()
+     SET status = 'closed', exit_price = COALESCE($2, entry_price * (1 + $3)), pnl_usd = $4, pnl_pct = $3, closed_at = NOW()
      WHERE id = $1`,
-    [row.id, pnlPct, pnlUsd],
+    [row.id, exitPrice, pnlPct, pnlUsd],
   );
-  return { pnl_usd: pnlUsd, pnl_pct: pnlPct, symbol: row.symbol ?? undefined, token: row.token ?? undefined };
+}
+
+/**
+ * Close a position. DRY_RUN: estimate PnL from the agent's reasoning hint
+ * (existing behaviour). LIVE: close on the venue for real —
+ *   hyperliquid → reduce-only IoC sized from the exchange position
+ *   solana      → reverse Jupiter swap of the recorded entry output
+ *   evm         → reverse Uniswap swap of the recorded entry output
+ *   polymarket  → SELL the recorded shares at the live midpoint
+ *   robinhood   → fail loud (USD-notional market sells cannot close an
+ *                 exact position — handle manually until fill quantities
+ *                 are recorded)
+ */
+async function executeLiveClose(
+  intent: LuxyIntent,
+): Promise<{ pnl_usd: number; pnl_pct: number; symbol?: string; token?: string } | null> {
+  const row = await findOpenPosition(intent);
+  if (!row) return null;
+
+  if (config.DRY_RUN) {
+    const pnlPct = estimateClosePnlPct(intent);
+    const pnlUsd = row.size_usd * pnlPct;
+    await markClosed(row, pnlUsd, null);
+    return { pnl_usd: pnlUsd, pnl_pct: pnlPct, symbol: row.symbol ?? undefined, token: row.token ?? undefined };
+  }
+
+  // ---- LIVE close per venue ----
+  if (row.chain === 'hyperliquid') {
+    const coin = intent.market ?? row.token ?? undefined;
+    if (!coin) throw new Error('live hyperliquid close: cannot resolve market');
+    const before = await fetchUserPositions(config.HYPERLIQUID_WALLET_ADDRESS);
+    const prior = before.find((p) => p.coin === coin);
+    const fill = await hyperliquidExecute({ ...intent, action: 'exit', market: coin });
+    if (!fill.filled) {
+      return { pnl_usd: 0, pnl_pct: 0, symbol: row.symbol ?? undefined, token: row.token ?? undefined };
+    }
+    const avgPx = Number(fill.note.match(/filled [\d.]+ @ ([\d.]+)/)?.[1] ?? '0');
+    const entryPx = prior?.entryPx ?? row.entry_price ?? 0;
+    const szi = Math.abs(prior?.szi ?? 0);
+    const pnlUsd = avgPx > 0 && entryPx > 0 && szi > 0 ? (avgPx - entryPx) * szi : row.size_usd * estimateClosePnlPct(intent);
+    await markClosed(row, pnlUsd, avgPx > 0 ? avgPx : null);
+    return { pnl_usd: pnlUsd, pnl_pct: row.size_usd > 0 ? pnlUsd / row.size_usd : 0, symbol: row.symbol ?? undefined, token: row.token ?? undefined };
+  }
+
+  if (row.chain === 'solana') {
+    const outAmount = row.intent?.fill?.outAmount;
+    if (!outAmount || !row.token) {
+      throw new Error('live solana close: position lacks recorded entry output — close manually');
+    }
+    const quote = await getQuote(row.token, USDC_MINT, Number(outAmount), Math.round(config.RISK_MAX_SLIPPAGE_PCT * 10_000));
+    const fill = await executeSwap(quote, false);
+    const proceeds = Number(quote.outAmount) / 1e6; // USDC out, 6dp
+    const pnlUsd = proceeds - row.size_usd;
+    await markClosed(row, pnlUsd, null);
+    log.info({ signature: fill.signature, proceeds }, 'live solana close swapped back to USDC');
+    return { pnl_usd: pnlUsd, pnl_pct: row.size_usd > 0 ? pnlUsd / row.size_usd : 0, symbol: row.symbol ?? undefined, token: row.token ?? undefined };
+  }
+
+  if (row.chain === 'base' || row.chain === 'ethereum') {
+    const outRaw = row.intent?.fill?.outRaw;
+    if (!outRaw || !row.token) {
+      throw new Error(`live ${row.chain} close: position lacks recorded entry output — close manually`);
+    }
+    const fill = await uniswapExecute({
+      chain: row.chain,
+      tokenOut: EVM_TOKENS[row.chain].usdc,
+      tokenIn: row.token as `0x${string}`,
+      amountInRaw: BigInt(outRaw),
+      sizeUsd: row.size_usd,
+      maxSlippagePct: config.RISK_MAX_SLIPPAGE_PCT,
+      dryRun: false,
+    });
+    const proceeds = Number(fill.outRaw) / 1e6; // USDC out, 6dp
+    const pnlUsd = proceeds - row.size_usd;
+    await markClosed(row, pnlUsd, null);
+    log.info({ txHash: fill.txHash, proceeds }, `live ${row.chain} close swapped back to USDC`);
+    return { pnl_usd: pnlUsd, pnl_pct: row.size_usd > 0 ? pnlUsd / row.size_usd : 0, symbol: row.symbol ?? undefined, token: row.token ?? undefined };
+  }
+
+  if (row.chain === 'polymarket') {
+    const shares = row.intent?.fill?.shares;
+    if (!shares || shares <= 0) {
+      throw new Error('live polymarket close: position lacks recorded share count — close manually');
+    }
+    const exitIntent: LuxyIntent & { shares?: number } = { ...intent, action: 'exit', side: 'short', shares };
+    const fill = await polymarketExecute(exitIntent);
+    const proceeds = shares * (Number(fill.note.match(/@ ([\d.]+)/)?.[1] ?? '0'));
+    const pnlUsd = proceeds > 0 ? proceeds - row.size_usd : row.size_usd * estimateClosePnlPct(intent);
+    await markClosed(row, pnlUsd, null);
+    return { pnl_usd: pnlUsd, pnl_pct: row.size_usd > 0 ? pnlUsd / row.size_usd : 0, symbol: row.symbol ?? undefined, token: row.token ?? undefined };
+  }
+
+  throw new Error(
+    `live close for chain "${row.chain}" is not automated (USD-notional venues need recorded fill quantities) — close manually, then resume dry-run`,
+  );
 }
 
 function estimateClosePnlPct(intent: LuxyIntent): number {
