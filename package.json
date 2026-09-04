@@ -1,7 +1,7 @@
 {
   "name": "luxy-ai",
   "version": "0.1.0",
-  "description": "Autonomous AI Trading Agent — Fine-Tuned Model · Execution Runtime · E2B In-Session Terminal",
+  "description": "Autonomous AI Trading Agent \u2014 Fine-Tuned Model \u00b7 Execution Runtime \u00b7 E2B In-Session Terminal",
   "type": "module",
   "license": "Apache-2.0",
   "author": "mrxpoint",
@@ -31,10 +31,15 @@
     "tui": "tsx src/tui/index.tsx",
     "dev:web": "pnpm --filter @luxy/web dev",
     "build:web": "pnpm --filter @luxy/web build",
-    "start:web": "pnpm --filter @luxy/web start"
+    "start:web": "pnpm --filter @luxy/web start",
+    "preflight:live": "tsx scripts/preflight-live.ts",
+    "healthcheck": "tsx scripts/healthcheck.ts",
+    "test:hl-signing": "tsx scripts/test-hyperliquid-signing.ts",
+    "test:pm-live": "tsx scripts/test-polymarket-live.ts"
   },
   "dependencies": {
     "@e2b/code-interpreter": "^1.0.0",
+    "@msgpack/msgpack": "^3.0.0",
     "@solana/web3.js": "^1.95.0",
     "bs58": "^6.0.0",
     "bullmq": "^5.12.0",
