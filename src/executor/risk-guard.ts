@@ -8,7 +8,7 @@
  */
 import type { LuxyIntent, RiskCheckResult } from '../types/index.js';
 import { config } from '../config/index.js';
-import { isPaused } from '../redis/connection.js';
+import { isPausedFailClosed } from '../redis/connection.js';
 import { getPortfolioState } from './portfolio.js';
 
 function ok(reason = 'all risk checks passed'): RiskCheckResult {
@@ -19,7 +19,10 @@ function block(reason: string): RiskCheckResult {
 }
 
 export async function checkPause(): Promise<RiskCheckResult> {
-  return (await isPaused()) ? block('executor paused via luxy:paused flag') : ok('not paused');
+  // Fail-closed: if Redis is down we cannot verify the pause flag → block.
+  return (await isPausedFailClosed())
+    ? block('executor paused via luxy:paused flag (or pause-flag state unverifiable — fail-closed)')
+    : ok('not paused');
 }
 
 export async function checkDailyDrawdown(): Promise<RiskCheckResult> {

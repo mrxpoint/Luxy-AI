@@ -117,6 +117,7 @@ async function screenOnce(): Promise<void> {
   log.info({ discovered: pairs.length, perChain }, 'screener cycle start');
 
   let queued = 0;
+  let llmChecked = 0;
   for (const pair of pairs) {
     const { score } = scorePair(pair);
     if (score < SCORING_THRESHOLD) continue;
@@ -124,15 +125,17 @@ async function screenOnce(): Promise<void> {
     const candidate = toCandidate(pair, score);
     if (!candidate) continue;
 
+    // Cross-process dedupe FIRST — never spend an LLM call on a token we
+    // already queued within the TTL window.
+    const dupeKey = `luxy:seen:meme:${candidate.token}`;
+    if (await seenRecently(dupeKey, DEDUPE_TTL_S)) continue;
+
     // Tier-2 LLM filter — only strong/moderate proceed.
     const { verdict, reason } = await filterCandidate(candidate);
     candidate.llmVerdict = verdict;
     candidate.llmReason = reason;
+    llmChecked++;
     if (verdict !== 'strong' && verdict !== 'moderate') continue;
-
-    // Cross-process dedupe.
-    const dupeKey = `luxy:seen:meme:${candidate.token}`;
-    if (await seenRecently(dupeKey, DEDUPE_TTL_S)) continue;
 
     const signalId = await persistCandidate(candidate);
     if (signalId !== null) {
@@ -150,7 +153,7 @@ async function screenOnce(): Promise<void> {
     await audit('screener', 'signal_emitted', { token: candidate.token, symbol: candidate.symbol, score, verdict });
   }
 
-  log.info({ queued }, 'screener cycle done');
+  log.info({ queued, llmChecked }, 'screener cycle done');
 }
 
 async function main(): Promise<void> {

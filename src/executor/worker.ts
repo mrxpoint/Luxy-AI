@@ -10,6 +10,7 @@ import { config } from '../config/index.js';
 import { query } from '../db/pool.js';
 import { audit } from '../db/audit.js';
 import { notify } from '../redis/queues.js';
+import { redis } from '../redis/connection.js';
 import { logger } from '../utils/logger.js';
 import type { LuxyIntent } from '../types/index.js';
 import { runAllChecks } from './risk-guard.js';
@@ -37,6 +38,21 @@ async function processIntent(job: Job<LuxyIntent>): Promise<{ status: string; no
     return { status: 'notified', note: 'alert intent' };
   }
 
+  // ---- Idempotency guard ----
+  // BullMQ attempts=1 does not cover manual re-enqueue/duplicate adds; without
+  // a dedupe key a reprocessed entry intent could double-enter. Entry intents
+  // are deduped on (agent, chain, token, action) for 60s — long enough to
+  // swallow duplicate adds, short enough not to block legitimate re-entries.
+  if (intent.action === 'entry') {
+    const idemKey = `luxy:intent:idem:${intent.agent}:${intent.chain}:${intent.token ?? intent.market ?? intent.poolId ?? 'na'}`;
+    const fresh = await redis.set(idemKey, job.id ?? '1', 'EX', 60, 'NX');
+    if (fresh !== 'OK') {
+      log.warn({ idemKey }, 'duplicate entry intent suppressed (idempotency)');
+      await audit('executor', 'idempotent_skip', { intent });
+      return { status: 'duplicate', note: 'duplicate entry intent suppressed (60s window)' };
+    }
+  }
+
   // ---- Risk gate (hardcoded; blocks override everything) ----
   let estimatedSlippage = 0;
   if (intent.action === 'entry' && intent.chain === 'solana' && intent.sizeUsd) {
@@ -45,6 +61,8 @@ async function processIntent(job: Job<LuxyIntent>): Promise<{ status: string; no
       const quote = await getQuote(USDC_MINT, intent.token ?? SOL_MINT, amountRaw, Math.round(config.RISK_MAX_SLIPPAGE_PCT * 10_000));
       estimatedSlippage = quoteSlippage(quote);
       (intent as LuxyIntent & { _quote?: JupiterQuoteLite })._quote = {
+        inputMint: quote.inputMint,
+        outputMint: quote.outputMint,
         outAmount: quote.outAmount,
         inAmount: quote.inAmount,
         priceImpactPct: quote.priceImpactPct,
@@ -142,6 +160,8 @@ async function processIntent(job: Job<LuxyIntent>): Promise<{ status: string; no
 }
 
 interface JupiterQuoteLite {
+  inputMint: string;
+  outputMint: string;
   outAmount: string;
   inAmount: string;
   priceImpactPct: string;
@@ -183,8 +203,12 @@ async function insertPosition(
 
 function deriveEntryPrice(intent: LuxyIntent, quote?: JupiterQuoteLite): number | null {
   if (quote && intent.sizeUsd && Number(quote.outAmount) > 0) {
-    // outAmount is in output-mint base units; price = usd in / token out (approx, decimals unknown here).
-    return (intent.sizeUsd ?? 0) / (Number(quote.outAmount) / 1e6 || 1);
+    // outAmount is in the OUTPUT MINT's base units — the divisor must match
+    // that mint's decimals, not always-6. Known mints are explicit; unknown
+    // SPL mints default to 6 (the USDC-entry convention; SOL is corrected).
+    const outDecimals = quote.outputMint === SOL_MINT ? 9 : 6;
+    const tokenOut = Number(quote.outAmount) / 10 ** outDecimals;
+    return tokenOut > 0 ? (intent.sizeUsd ?? 0) / tokenOut : null;
   }
   return null;
 }
@@ -200,7 +224,26 @@ interface OpenPositionRow {
 }
 
 async function findOpenPosition(intent: LuxyIntent): Promise<OpenPositionRow | null> {
-  const res = await query<OpenPositionRow>(
+  // Prefer an exact token match; fall back to the oldest open row of the same
+  // agent+chain ONLY when the intent carries no token at all (previously the
+  // fallback applied even when a token was given, which could close the wrong
+  // position).
+  const exact = await query<OpenPositionRow>(
+    `SELECT p.id, p.chain, p.token, p.size_usd, p.entry_price, p.intent,
+            (s.raw_data->>'baseToken'->>'symbol') AS symbol
+     FROM positions p
+     LEFT JOIN LATERAL (
+       SELECT raw_data FROM signals WHERE token = p.token ORDER BY created_at DESC LIMIT 1
+     ) s ON TRUE
+     WHERE p.status = 'open' AND p.agent = $1 AND p.chain = $2 AND p.token = $3
+     ORDER BY p.opened_at ASC
+     LIMIT 1`,
+    [intent.agent, intent.chain, intent.token ?? ''],
+  );
+  if (exact.rows[0]) return exact.rows[0];
+  if (intent.token) return null; // token specified but no match → never guess
+
+  const fallback = await query<OpenPositionRow>(
     `SELECT p.id, p.chain, p.token, p.size_usd, p.entry_price, p.intent,
             (s.raw_data->>'baseToken'->>'symbol') AS symbol
      FROM positions p
@@ -208,12 +251,11 @@ async function findOpenPosition(intent: LuxyIntent): Promise<OpenPositionRow | n
        SELECT raw_data FROM signals WHERE token = p.token ORDER BY created_at DESC LIMIT 1
      ) s ON TRUE
      WHERE p.status = 'open' AND p.agent = $1 AND p.chain = $2
-       AND ($3::text IS NULL OR p.token = $3)
      ORDER BY p.opened_at ASC
      LIMIT 1`,
-    [intent.agent, intent.chain, intent.token ?? null],
+    [intent.agent, intent.chain],
   );
-  return res.rows[0] ?? null;
+  return fallback.rows[0] ?? null;
 }
 
 async function markClosed(

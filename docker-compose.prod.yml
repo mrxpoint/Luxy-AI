@@ -6,6 +6,8 @@
 #   docker compose -f docker-compose.prod.yml up -d --build
 #
 # All services read env from .env (same file as the PM2 deployment).
+# POSTGRES_PASSWORD must be set in .env — the default is dev-only.
+# Service containers run the BUILT tsc output (dist/*), not tsx dev scripts.
 
 x-service: &service
   build:
@@ -14,7 +16,7 @@ x-service: &service
   restart: unless-stopped
   env_file: .env
   environment:
-    DATABASE_URL: postgresql://luxy:${POSTGRES_PASSWORD:-luxy_dev_password}@db:5432/luxydb
+    DATABASE_URL: postgresql://luxy:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@db:5432/luxydb
     REDIS_URL: redis://cache:6379
   depends_on:
     db:
@@ -28,47 +30,47 @@ x-service: &service
 services:
   screener:
     <<: *service
-    command: pnpm dev:screener
+    command: node dist/screener/index.js
     container_name: luxy-screener
 
   executor:
     <<: *service
-    command: pnpm dev:executor
+    command: node dist/executor/index.js
     container_name: luxy-executor
 
   luxy-agent:
     <<: *service
-    command: pnpm dev:agent
+    command: node dist/agents/luxy/index.js
     container_name: luxy-agent
 
   perps-agent:
     <<: *service
-    command: pnpm dev:perps
+    command: node dist/agents/perps/index.js
     container_name: luxy-perps
 
   lp-agent:
     <<: *service
-    command: pnpm dev:lp
+    command: node dist/agents/lp/index.js
     container_name: luxy-lp
 
   narrative-agent:
     <<: *service
-    command: pnpm dev:narrative
+    command: node dist/agents/narrative/index.js
     container_name: luxy-narrative
 
   polymarket-agent:
     <<: *service
-    command: pnpm dev:polymarket
+    command: node dist/agents/polymarket/index.js
     container_name: luxy-polymarket
 
   candle-ingest:
     <<: *service
-    command: pnpm dev:candles
+    command: node dist/market/ingest.js
     container_name: luxy-candles
 
   telegram-bot:
     <<: *service
-    command: pnpm dev:telegram
+    command: node dist/telegram/index.js
     container_name: luxy-telegram
 
   web:
@@ -79,7 +81,7 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      DATABASE_URL: postgresql://luxy:${POSTGRES_PASSWORD:-luxy_dev_password}@db:5432/luxydb
+      DATABASE_URL: postgresql://luxy:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@db:5432/luxydb
       REDIS_URL: redis://cache:6379
     ports:
       - "3000:3000"
@@ -97,7 +99,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: luxy
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-luxy_dev_password}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
       POSTGRES_DB: luxydb
     volumes:
       - pg-data:/var/lib/postgresql/data

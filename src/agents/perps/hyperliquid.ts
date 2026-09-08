@@ -80,6 +80,15 @@ export async function fetchUserPositions(address: string): Promise<HyperliquidPo
   }));
 }
 
+/** Account equity (marginSummary.accountValue — includes unrealized PnL). */
+export async function fetchAccountValue(address: string): Promise<number> {
+  const data = await postJson<{ marginSummary?: { accountValue?: string } }>(
+    `${BASE}/info`,
+    { type: 'clearinghouseState', user: address },
+  );
+  return Number(data.marginSummary?.accountValue ?? 0);
+}
+
 /**
  * Order execution — dry-run aware (BLUEPRINT §6.4: EIP-712 signed at executor).
  *

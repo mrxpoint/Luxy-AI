@@ -18,6 +18,7 @@ interface StrategyRow {
 export default function StrategyPage() {
   const [rows, setRows] = useState<StrategyRow[] | null>(null);
   const [proposals, setProposals] = useState<StrategyRow[] | null>(null);
+  const [feedback, setFeedback] = useState<string | null>(null);
   const [offline, setOffline] = useState(false);
   const [busyId, setBusyId] = useState<number | null>(null);
 
@@ -44,12 +45,21 @@ export default function StrategyPage() {
   async function decide(id: number, decision: 'approve' | 'reject') {
     setBusyId(id);
     try {
-      await fetch('/api/strategy/decide', {
+      const res = await fetch('/api/strategy/decide', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(process.env.NEXT_PUBLIC_LUXY_WEB_TOKEN
+            ? { Authorization: `Bearer ${process.env.NEXT_PUBLIC_LUXY_WEB_TOKEN}` }
+            : {}),
+        },
         body: JSON.stringify({ id, decision }),
       });
+      const data = (await res.json()) as { ok?: boolean; message?: string };
+      setFeedback(data.message ?? (data.ok ? 'done' : 'decision failed'));
       load();
+    } catch {
+      setFeedback('decision request failed');
     } finally {
       setBusyId(null);
     }
@@ -70,6 +80,11 @@ export default function StrategyPage() {
         <p className="mt-1 font-mono text-xs text-ink/60">
           versioned parameters per agent — Luxy proposes, you approve, versions are never overwritten.
         </p>
+        {feedback && (
+          <p className="mt-2 inline-block border-2 border-ink bg-mint px-2 py-1 font-mono text-xs font-bold" role="status">
+            {feedback}
+          </p>
+        )}
       </div>
 
       {offline ? <OfflineBanner note="database unreachable or empty — showing default v1 configs." /> : null}

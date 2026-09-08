@@ -66,6 +66,7 @@ export async function scanPolymarketSignals(limit = 8): Promise<PolymarketSignal
     } catch {
       continue;
     }
+    m.clobTokenIds = tokenIds.clobTokenIds;
     const model = await modelProbability(m.question, m.outcomes[idx]);
     if (model === null) continue;
     const signal = signalFromMarket(m, idx, marketPrice, model);

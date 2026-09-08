@@ -67,13 +67,48 @@ export function runMomentumBacktest(
 
   const mean = avg(returns);
   const sd = std(returns);
+  // Per-trade stats → annualized Sharpe: hold-period trades per year derived
+  // from the candle cadence when timestamps are available (else no
+  // annualization — reporting per-trade Sharpe is more honest than a wrong
+  // ×√252 which assumed daily bars).
+  const cadenceMin = inferCadenceMinutes(candles);
+  const tradesPerYear = cadenceMin > 0 ? (365 * 24 * 60) / (cadenceMin * hold) : 0;
+  const sharpe = tradesPerYear > 0 ? (mean / (sd + 1e-8)) * Math.sqrt(tradesPerYear) : mean / (sd + 1e-8);
   return {
     win_rate: returns.filter((r) => r > 0).length / returns.length,
     avg_return: mean,
-    sharpe: mean / (sd + 1e-8) * Math.sqrt(252),
-    max_drawdown: Math.min(...returns),
+    sharpe,
+    max_drawdown: equityCurveDrawdown(returns),
     n_trades: returns.length,
   };
+}
+
+/** Median gap between candle timestamps in minutes (0 when unknown). */
+function inferCadenceMinutes(candles: CandleLike[]): number {
+  const ts = candles.filter((c) => typeof c.t === 'number').map((c) => c.t!);
+  if (ts.length < 2) return 0;
+  const gaps: number[] = [];
+  for (let i = 1; i < ts.length; i++) {
+    const d = ts[i]! - ts[i - 1]!;
+    if (d > 0) gaps.push(d / 60_000);
+  }
+  if (gaps.length === 0) return 0;
+  gaps.sort((a, b) => a - b);
+  return gaps[Math.floor(gaps.length / 2)]!;
+}
+
+/** Max peak-to-trough drawdown of the compounded equity curve of trade returns. */
+function equityCurveDrawdown(returns: number[]): number {
+  let equity = 1;
+  let peak = 1;
+  let maxDd = 0;
+  for (const r of returns) {
+    equity *= 1 + r;
+    peak = Math.max(peak, equity);
+    const dd = equity / peak - 1;
+    if (dd < maxDd) maxDd = dd;
+  }
+  return maxDd;
 }
 
 function rollingMean(xs: number[], w: number): Array<number | undefined> {

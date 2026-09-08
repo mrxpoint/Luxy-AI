@@ -101,6 +101,7 @@ export interface PoolCandidate {
 /** Polymarket prediction-market signal (BLUEPRINT.md §9.4 / Phase 3). */
 export interface PolymarketSignal {
   conditionId: string;
+  clobTokenId: string;             // numeric CLOB token id (executor live path)
   slug: string;
   question: string;
   outcome: string;                 // outcome token to buy, e.g. "Yes"

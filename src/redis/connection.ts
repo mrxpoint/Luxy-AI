@@ -18,8 +18,21 @@ export async function isPaused(): Promise<boolean> {
   try {
     return (await redis.get(PAUSE_KEY)) === '1';
   } catch {
-    // Fail-open for screeners, fail-closed for the executor (checked there too).
+    // Fail-open for screeners — never blocks reading flows.
     return false;
+  }
+}
+
+/**
+ * Fail-closed variant for the executor risk guard: when Redis is unreachable
+ * we cannot verify the pause flag, so entries are BLOCKED (fail-closed).
+ * The kill switch must never silently stop working because Redis is down.
+ */
+export async function isPausedFailClosed(): Promise<boolean> {
+  try {
+    return (await redis.get(PAUSE_KEY)) === '1';
+  } catch {
+    return true; // cannot confirm "not paused" → treat as paused
   }
 }
 

@@ -66,9 +66,11 @@ export async function polymarketExecute(intent: LuxyIntent): Promise<PolymarketF
     );
   }
 
-  const tokenId = intent.token ?? '';
+  const tokenId = (intent as LuxyIntent & { clobTokenId?: string }).clobTokenId ?? intent.token ?? '';
   if (!/^\d{10,}$/.test(tokenId)) {
-    throw new Error('LIVE Polymarket intent is missing a numeric CLOB token id');
+    throw new Error(
+      'LIVE Polymarket intent is missing a numeric CLOB token id (clobTokenId) — the polymarket agent must send clobTokenId from the signal',
+    );
   }
 
   const side = intent.side === 'short' ? 'SELL' : 'BUY';

@@ -10,6 +10,7 @@ import { intentQueue, notify } from '../../redis/queues.js';
 import { subagentLLM, tryChat } from '../../llm/adapter.js';
 import { personaPrompt, ROLE_LP_GUARDIAN } from '../../llm/prompts/persona.js';
 import { getRecentLessons, evolveThresholds, type HealerThresholds } from './hivemind.js';
+import { readOnChainState, loadAgentKeypairAddress } from './position-reader.js';
 import { logger } from '../../utils/logger.js';
 import type { LuxyIntent } from '../../types/index.js';
 
@@ -33,8 +34,18 @@ export async function healOnce(): Promise<void> {
   );
 
   for (const pos of open.rows) {
-    const pnlPct = await estimatePositionPnlPct(pos);
-    const inRange = estimateInRange(pos);
+    // On-chain state when the position address is recorded and the API is
+    // reachable; time-based simulation otherwise (dry-run).
+    const owner = loadAgentKeypairAddress();
+    const chainState = await readOnChainState(
+      owner,
+      pos.pool_id,
+      pos.opened_at,
+      pos.intent,
+      () => estimatePositionPnlPct(pos),
+    );
+    const pnlPct = chainState.pnlPct ?? estimatePositionPnlPct(pos);
+    const inRange = chainState.inRange;
 
     // Decision ladder, in order (BLUEPRINT §6.3):
     if (pnlPct < thresholds.stopLossPct) {
@@ -70,7 +81,8 @@ function estimatePositionPnlPct(pos: OpenLpPosition): number {
   return Math.min(0.05 * hours, 0.08);
 }
 
-function estimateInRange(pos: OpenLpPosition): boolean {
+/** Kept for reference; superseded by readOnChainState simulation fallback. */
+function _unusedEstimateInRange(pos: OpenLpPosition): boolean {
   // Simulated range drift: out of range after ~40 minutes in dry-run.
   return minutesSince(pos.opened_at) < 40;
 }

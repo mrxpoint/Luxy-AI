@@ -23,6 +23,8 @@ export interface GammaMarket {
   endDate: string;
   active: boolean;
   closed: boolean;
+  /** Numeric CLOB token ids per outcome (parallel to outcomes) when resolved. */
+  clobTokenIds?: string[];
 }
 
 /** Open, liquid markets ending within a sensible horizon (7–30 days out). */
@@ -110,6 +112,7 @@ export function signalFromMarket(
   const score = Math.max(0, Math.min(1, Math.abs(edge) * 2 + Math.min(liquidityUsd / 50_000, 0.3)));
   return {
     conditionId: m.conditionId,
+    clobTokenId: m.clobTokenIds?.[outcomeIndex] ?? '',
     slug: m.slug,
     question: m.question,
     outcome: m.outcomes[outcomeIndex] ?? `outcome${outcomeIndex}`,

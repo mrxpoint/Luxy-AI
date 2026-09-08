@@ -25,8 +25,10 @@ COPY src ./src
 COPY scripts ./scripts
 COPY db ./db
 ENV NODE_ENV=production
-# Default entrypoint: the executor. Override with `command: tsx src/<path>` per service.
-CMD ["pnpm", "dev:executor"]
+# Compile once at image build — services run plain `node dist/...` (no tsx in prod).
+RUN pnpm build
+# Default entrypoint: the executor. Override with `command: node dist/<path>` per service.
+CMD ["node", "dist/executor/index.js"]
 
 # ---- web UI ----
 FROM base AS web

@@ -18,6 +18,9 @@ import { scanPolymarketSignals } from './signals.js';
 
 const log = logger.child({ module: 'polymarket-agent' });
 
+// Augmented intent carrying the numeric CLOB token id for live execution.
+type PolyIntent = LuxyIntent & { clobTokenId?: string };
+
 async function cycle(): Promise<void> {
   const signals = await scanPolymarketSignals();
   log.info({ found: signals.length }, 'polymarket cycle');
@@ -28,11 +31,14 @@ async function cycle(): Promise<void> {
     const side = s.edge > 0 ? 'long' : 'short';
     const sizeUsd = Math.min(50, Math.max(5, Math.round(s.liquidityUsd * 0.002)));
 
-    const intent: LuxyIntent = {
+    const intent: PolyIntent = {
       action: 'entry',
       agent: 'polymarket',
       chain: 'polymarket',
       token: s.conditionId,
+      // numeric CLOB token id — the executor's live path signs orders against
+      // this, not the conditionId (which is only a DB/human identifier)
+      clobTokenId: s.clobTokenId,
       symbol: s.slug,
       side,
       sizeUsd,
