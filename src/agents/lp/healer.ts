@@ -8,6 +8,7 @@
 import { query } from '../../db/pool.js';
 import { intentQueue, notify } from '../../redis/queues.js';
 import { subagentLLM, tryChat } from '../../llm/adapter.js';
+import { personaPrompt, ROLE_LP_GUARDIAN } from '../../llm/prompts/persona.js';
 import { getRecentLessons, evolveThresholds, type HealerThresholds } from './hivemind.js';
 import { logger } from '../../utils/logger.js';
 import type { LuxyIntent } from '../../types/index.js';
@@ -137,9 +138,12 @@ async function llmConfirmRedeploy(pos: OpenLpPosition, pnlPct: number, inRange: 
         }),
       },
     ],
-    `You confirm LP redeploy decisions for an autonomous system. Given the position
-state and past HiveMind lessons, respond with ONLY: {"confirm": true|false, "reason":"..."}.
+    personaPrompt(
+      ROLE_LP_GUARDIAN,
+      `TASK
+Given the position state and past HiveMind lessons, respond with ONLY: {"confirm": true|false, "reason":"..."}.
 Be conservative: confirm only when lessons support redeploying at these conditions.`,
+    ),
   );
   if (!res) return false; // fail-safe: no confirmation → stay
   try {

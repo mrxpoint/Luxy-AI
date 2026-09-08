@@ -14,6 +14,7 @@ import { query } from '../db/pool.js';
 import { audit } from '../db/audit.js';
 import { notify } from '../redis/queues.js';
 import { subagentLLM, tryChat } from '../llm/adapter.js';
+import { personaPrompt, ROLE_STRATEGY_TUNER } from '../llm/prompts/persona.js';
 import { logger } from '../utils/logger.js';
 import type { AgentName, StrategyProposal } from '../types/index.js';
 
@@ -106,7 +107,24 @@ Respond with a single JSON object, no markdown:
 {"params": {<full updated param set>}, "rationale": "<2-3 sentences>"}`,
         },
       ],
-      'You are the Luxy strategy tuning sub-agent. Output JSON only.',
+      personaPrompt(
+        ROLE_STRATEGY_TUNER,
+        `TASK
+You manage trading strategy parameters for the "${agent}" agent.
+
+CURRENT PARAMS (JSON):
+${JSON.stringify(baseParams, null, 2)}
+
+RECENT PERFORMANCE (last 7 days): trades=${stats.trades}, win_rate=${(stats.winRate * 100).toFixed(0)}%, avg_pnl=${(stats.avgPnlPct * 100).toFixed(2)}%
+
+Propose a CONSERVATIVE parameter adjustment. Rules:
+- Change at most 2 parameters.
+- Every numeric change is capped at ±20% of its current value.
+- If performance is healthy (win_rate >= 55% and avg_pnl > 0), prefer no change.
+
+Respond with a single JSON object, no markdown:
+{"params": {<full updated param set>}, "rationale": "<2-3 sentences>"}`,
+      ),
     );
     if (res) {
       const cleaned = res.text.replace(/```json|```/g, '').trim();

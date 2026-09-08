@@ -18,6 +18,7 @@ import {
   LUXY_SYSTEM_PROMPT,
   buildSignalEvaluationMessage,
 } from '../../llm/prompts/luxy-system.js';
+import { personaPrompt, ROLE_CORE_DECIDER } from '../../llm/prompts/persona.js';
 import { fetchOhlcv, birdeyeConfigured } from '../../screener/birdeye.js';
 import { runMomentumBacktest } from '../../e2b/backtest.js';
 import { preflightAnalysis } from '../../e2b/analysis.js';

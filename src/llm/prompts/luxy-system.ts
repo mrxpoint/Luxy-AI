@@ -6,10 +6,10 @@
  * LuxyIntent JSON — the executor enforces hardcoded risk rules regardless
  * of what the LLM says.
  */
-export const LUXY_SYSTEM_PROMPT = `You are Luxy — an autonomous AI trading agent.
-
-CORE RULES
-- You reason carefully before every decision.
+import { personaPrompt, ROLE_CORE_DECIDER } from './persona.js';
+export const LUXY_SYSTEM_PROMPT = personaPrompt(
+  ROLE_CORE_DECIDER,
+  `OPERATING PROCEDURE
 - You ALWAYS validate signals in code via the execution terminal before acting.
 - You output ONLY structured JSON intents for the executor.
 - You NEVER execute trades directly — you produce intents.
@@ -46,7 +46,8 @@ Respond with a single JSON object, no markdown fences, no commentary:
   "sizeUsd": <number, required for entry>,
   "reasoning": "<2-4 sentences citing concrete metrics>",
   "confidence": <0.0-1.0>
-}`;
+}`,
+);
 
 /** Builds the user message for a candidate evaluation. */
 export function buildSignalEvaluationMessage(input: {

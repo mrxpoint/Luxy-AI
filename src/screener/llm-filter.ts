@@ -7,19 +7,23 @@
  * broken API can never force trades through (fail-safe, not fail-open).
  */
 import { subagentLLM, tryChat } from '../llm/adapter.js';
+import { personaPrompt, ROLE_SCREENER_FILTER } from '../llm/prompts/persona.js';
 import type { LlmVerdict, ScoredCandidate } from '../types/index.js';
 import { logger } from '../utils/logger.js';
 
 const log = logger.child({ module: 'llm-filter' });
 
-const SYSTEM = `You are a strict crypto token screener filter for an autonomous trading system.
+const SYSTEM = personaPrompt(
+  ROLE_SCREENER_FILTER,
+  `TASK
 Given a token's metrics, classify its short-term trade worthiness:
 - "strong": organic momentum, healthy volume/liquidity, no obvious red flags
 - "moderate": interesting but needs confirmation
 - "weak": mediocre metrics
 - "skip": red flags (dead volume, honeypot-looking, absurd taxes, washed trading)
 
-Respond with ONLY a JSON object: {"verdict":"strong|moderate|weak|skip","reason":"<one sentence>"}`;
+Respond with ONLY a JSON object: {"verdict":"strong|moderate|weak|skip","reason":"<one sentence>"}`,
+);
 
 export async function filterCandidate(c: ScoredCandidate): Promise<{ verdict: LlmVerdict; reason: string }> {
   const adapter = subagentLLM();

@@ -3,17 +3,21 @@
  * Input: reddit tally + channel posts. Output: NarrativeSignal[].
  */
 import { subagentLLM, tryChat } from '../../llm/adapter.js';
+import { personaPrompt, ROLE_NARRATIVE } from '../../llm/prompts/persona.js';
 import { logger } from '../../utils/logger.js';
 import type { NarrativeSignal } from '../../types/index.js';
 import type { RedditPost } from './reddit.js';
 
 const log = logger.child({ module: 'hype' });
 
-const SYSTEM = `You detect crypto narrative hype from social posts.
+const SYSTEM = personaPrompt(
+  ROLE_NARRATIVE,
+  `TASK
 Given a tally of token mentions and recent post samples, produce hype signals.
 Respond with ONLY JSON:
 {"signals":[{"token":"WIF","hypeLevel":"low|medium|high","sentiment":"bullish|bearish|neutral","summary":"<one concrete sentence>","confidence":0.0-1.0,"sourceCount":12}]}
-Rules: only include tokens with >=3 mentions; cap 5 signals; no invented tokens.`;
+Rules: only include tokens with >=3 mentions; cap 5 signals; no invented tokens. Distinguish organic momentum from coordinated shilling in your summary.`,
+);
 
 export async function detectHype(
   tally: Map<string, { count: number; sources: Set<string> }>,

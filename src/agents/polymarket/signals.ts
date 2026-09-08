@@ -9,6 +9,7 @@
 import { getJson, postJson } from '../../utils/http.js';
 import { config } from '../../config/index.js';
 import { subagentLLM, tryChat } from '../../llm/adapter.js';
+import { personaPrompt, ROLE_FORECASTER } from '../../llm/prompts/persona.js';
 import { fetchOpenMarkets, fetchMidpoint, fetchOutcomeTokenIds, signalFromMarket } from './gamma.js';
 import type { PolymarketSignal } from '../../types/index.js';
 
@@ -25,7 +26,14 @@ Consider base rates, timelines, and observable momentum. Respond ONLY with JSON:
 {"probability": <0.0-1.0>, "confidence": <0.0-1.0>}`,
       },
     ],
-    'You are a calibrated probabilistic forecaster. Output JSON only.',
+    personaPrompt(
+      ROLE_FORECASTER,
+      `TASK
+Prediction market: "${question}"
+Estimate the current probability that the outcome "${outcome}" occurs.
+Consider base rates, timelines, and observable momentum. Respond ONLY with JSON:
+{"probability": <0.0-1.0>, "confidence": <0.0-1.0>}`,
+    ),
   );
   if (!res) return null;
   try {
