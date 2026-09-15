@@ -39,3 +39,4 @@ Thumbs.db
 keys.txt
 wallets/*.json
 data/
+models/

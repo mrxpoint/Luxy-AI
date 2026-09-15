@@ -4,6 +4,7 @@
  */
 import { fetchCandles as fetchHlCandles } from '../agents/perps/hyperliquid.js';
 import { upsertCandles, readCandles } from './candles.js';
+import { fetchOhlcv, birdeyeConfigured } from '../screener/birdeye.js';
 import { logger } from '../utils/logger.js';
 import type { Candle } from '../types/index.js';
 
@@ -78,13 +79,44 @@ export async function fetchHistorical(req: HistoricalFetchRequest): Promise<Hist
   }
 
   if (req.venue === 'birdeye') {
-    return {
-      venue: 'birdeye',
-      series: [],
-      cached: false,
-      source: 'api',
-      note: 'use screener birdeye OHLCV per token mint; bulk historical range pull TBD',
-    };
+    const mint = req.symbolOrMarket;
+    const chain = 'solana';
+    if (!birdeyeConfigured()) {
+      return {
+        venue: 'birdeye',
+        series: [],
+        cached: false,
+        source: 'api',
+        note: 'BIRDEYE_API_KEY not configured',
+      };
+    }
+    const cached = await readCandles({ chain, token: mint, timeframe: interval }, hours);
+    const needApi = cached.length < Math.max(10, hours * 0.3);
+    if (!needApi) {
+      return { venue: 'birdeye', series: cached, cached: true, source: 'timescaledb' };
+    }
+    try {
+      const series = await fetchOhlcv(mint, hours);
+      if (series.length > 0) {
+        await upsertCandles({ chain, token: mint, timeframe: interval }, series);
+      }
+      const merged = series.length > 0 ? series : cached;
+      return {
+        venue: 'birdeye',
+        series: merged,
+        cached: series.length === 0 && cached.length > 0,
+        source: series.length > 0 && cached.length > 0 ? 'partial_cache' : series.length > 0 ? 'api' : 'timescaledb',
+      };
+    } catch (err) {
+      log.warn({ err, mint }, 'birdeye historical fetch failed');
+      return {
+        venue: 'birdeye',
+        series: cached,
+        cached: true,
+        source: 'timescaledb',
+        note: 'api failed — returned cache only',
+      };
+    }
   }
 
   // polymarket — only data the API provides; no fabricated series

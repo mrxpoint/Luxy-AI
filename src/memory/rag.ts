@@ -1,9 +1,9 @@
 /**
- * Vector RAG helpers (BLUEPRINT.md §8.4.4).
+ * RAG helpers (BLUEPRINT.md §8.4.4).
  *
- * Chunks operational lessons/positions into memory_chunks.
- * Embeddings: optional OpenAI-compatible call when MEMORY_RAG_ENABLED and
- * an API key is present; otherwise retrieval is keyword/ILIKE over content.
+ * - Always: keyword / ILIKE retrieval over memory_chunks
+ * - When MEMORY_RAG_ENABLED + embedding API: store & rank by cosine similarity
+ *   using OpenAI-compatible /embeddings (OpenAI, OpenRouter, local)
  */
 import { query } from '../db/pool.js';
 import { config } from '../config/index.js';
@@ -21,9 +21,10 @@ export async function ingestLessonChunk(input: {
 }): Promise<void> {
   const content = `[${input.action}] ${input.outcome}${input.poolId ? ` (pool ${input.poolId})` : ''}`;
   try {
-    await query(
+    const ins = await query<{ id: number }>(
       `INSERT INTO memory_chunks (source_type, source_id, agent, chain, symbol, content, metadata)
-       VALUES ('lesson', $1, $2, $3, $4, $5, $6::jsonb)`,
+       VALUES ('lesson', $1, $2, $3, $4, $5, $6::jsonb)
+       RETURNING id`,
       [
         input.poolId ?? null,
         input.agent ?? 'lp',
@@ -33,20 +34,55 @@ export async function ingestLessonChunk(input: {
         JSON.stringify({ action: input.action }),
       ],
     );
+    const id = ins.rows[0]?.id;
+    if (id && config.MEMORY_RAG_ENABLED) {
+      await embedAndStore(id, content).catch((err) =>
+        log.debug({ err }, 'embed on ingest failed'),
+      );
+    }
   } catch (err) {
     log.debug({ err }, 'ingestLessonChunk failed');
   }
 }
 
-/** Sync recent lp_lessons into memory_chunks (idempotent-ish by content prefix). */
+export async function ingestNoteChunk(input: {
+  content: string;
+  agent?: string;
+  symbol?: string;
+  sourceType?: string;
+  sourceId?: string;
+}): Promise<void> {
+  try {
+    const ins = await query<{ id: number }>(
+      `INSERT INTO memory_chunks (source_type, source_id, agent, symbol, content, metadata)
+       VALUES ($1, $2, $3, $4, $5, '{}'::jsonb) RETURNING id`,
+      [
+        input.sourceType ?? 'note',
+        input.sourceId ?? null,
+        input.agent ?? 'luxy',
+        input.symbol ?? null,
+        input.content,
+      ],
+    );
+    const id = ins.rows[0]?.id;
+    if (id && config.MEMORY_RAG_ENABLED) {
+      await embedAndStore(id, input.content).catch(() => undefined);
+    }
+  } catch (err) {
+    log.debug({ err }, 'ingestNoteChunk failed');
+  }
+}
+
+/** Sync recent lp_lessons into memory_chunks. */
 export async function syncLessonsToChunks(limit = 50): Promise<number> {
   try {
     const res = await query<{
       pool_id: string;
       action: string;
       outcome_summary: string | null;
+      chain: string | null;
     }>(
-      `SELECT pool_id, action, outcome_summary FROM lp_lessons ORDER BY created_at DESC LIMIT $1`,
+      `SELECT pool_id, action, outcome_summary, chain FROM lp_lessons ORDER BY created_at DESC LIMIT $1`,
       [limit],
     );
     let n = 0;
@@ -56,6 +92,7 @@ export async function syncLessonsToChunks(limit = 50): Promise<number> {
         action: r.action,
         outcome: r.outcome_summary ?? 'no summary',
         agent: 'lp',
+        chain: r.chain ?? undefined,
       });
       n++;
     }
@@ -66,14 +103,23 @@ export async function syncLessonsToChunks(limit = 50): Promise<number> {
   }
 }
 
-export async function retrieveMemories(
-  question: string,
-  topK = config.MEMORY_RAG_ENABLED ? 8 : 5,
-): Promise<string[]> {
+export async function retrieveMemories(question: string, topK = 8): Promise<string[]> {
   const qtext = question.trim();
   if (!qtext) return [];
 
-  // Keyword retrieval (always available without embeddings)
+  if (config.MEMORY_RAG_ENABLED) {
+    try {
+      const embedded = await retrieveByEmbedding(qtext, topK);
+      if (embedded.length > 0) return embedded;
+    } catch (err) {
+      log.debug({ err }, 'embedding retrieve failed — keyword fallback');
+    }
+  }
+
+  return retrieveByKeyword(qtext, topK);
+}
+
+async function retrieveByKeyword(qtext: string, topK: number): Promise<string[]> {
   try {
     const tokens = qtext
       .toLowerCase()
@@ -81,8 +127,6 @@ export async function retrieveMemories(
       .filter((t) => t.length > 2)
       .slice(0, 6);
     if (tokens.length === 0) return [];
-    const pattern = tokens.map((t) => `%${t}%`).join('');
-    // Simple OR ilike on first meaningful token
     const primary = tokens[0]!;
     const res = await query<{ content: string }>(
       `SELECT content FROM memory_chunks
@@ -93,15 +137,103 @@ export async function retrieveMemories(
     );
     if (res.rows.length > 0) return res.rows.map((r) => r.content);
 
-    // Fallback: latest chunks
     const latest = await query<{ content: string }>(
       `SELECT content FROM memory_chunks ORDER BY created_at DESC LIMIT $1`,
       [topK],
     );
     return latest.rows.map((r) => r.content);
   } catch (err) {
-    log.debug({ err }, 'retrieveMemories failed');
+    log.debug({ err }, 'retrieveByKeyword failed');
     return [];
+  }
+}
+
+async function retrieveByEmbedding(qtext: string, topK: number): Promise<string[]> {
+  const qVec = await embedText(qtext);
+  if (!qVec) return [];
+
+  const res = await query<{ content: string; embedding: unknown }>(
+    `SELECT c.content, e.embedding
+     FROM memory_embeddings e
+     JOIN memory_chunks c ON c.id = e.chunk_id
+     ORDER BY e.created_at DESC
+     LIMIT 200`,
+  );
+  if (res.rows.length === 0) return [];
+
+  const scored = res.rows
+    .map((r) => ({
+      content: r.content,
+      score: cosine(qVec, parseVec(r.embedding)),
+    }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, topK);
+
+  return scored.filter((s) => s.score > 0.2).map((s) => s.content);
+}
+
+function parseVec(v: unknown): number[] {
+  if (Array.isArray(v)) return v as number[];
+  if (typeof v === 'string') {
+    try {
+      return JSON.parse(v) as number[];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+function cosine(a: number[], b: number[]): number {
+  if (a.length === 0 || b.length === 0 || a.length !== b.length) return 0;
+  let dot = 0;
+  let na = 0;
+  let nb = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i]! * b[i]!;
+    na += a[i]! * a[i]!;
+    nb += b[i]! * b[i]!;
+  }
+  const d = Math.sqrt(na) * Math.sqrt(nb);
+  return d === 0 ? 0 : dot / d;
+}
+
+async function embedAndStore(chunkId: number, text: string): Promise<void> {
+  const vec = await embedText(text);
+  if (!vec) return;
+  await query(
+    `INSERT INTO memory_embeddings (chunk_id, embedding, model)
+     VALUES ($1, $2::jsonb, $3)
+     ON CONFLICT (chunk_id) DO UPDATE SET embedding = EXCLUDED.embedding, model = EXCLUDED.model`,
+    [chunkId, JSON.stringify(vec), config.MEMORY_EMBED_MODEL],
+  );
+}
+
+async function embedText(text: string): Promise<number[] | null> {
+  const key = config.MEMORY_EMBED_API_KEY || config.SUBAGENT_LLM_API_KEY || config.LUXY_LLM_API_KEY;
+  if (!key) return null;
+  const base = (config.MEMORY_EMBED_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '');
+  try {
+    const res = await fetch(`${base}/embeddings`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${key}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: config.MEMORY_EMBED_MODEL,
+        input: text.slice(0, 8000),
+      }),
+    });
+    if (!res.ok) {
+      log.debug({ status: res.status }, 'embed API error');
+      return null;
+    }
+    const data = (await res.json()) as { data?: Array<{ embedding: number[] }> };
+    return data.data?.[0]?.embedding ?? null;
+  } catch (err) {
+    log.debug({ err }, 'embedText failed');
+    return null;
   }
 }
 

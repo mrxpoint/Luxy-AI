@@ -13,6 +13,7 @@ export {
 
 export {
   ingestLessonChunk,
+  ingestNoteChunk,
   syncLessonsToChunks,
   retrieveMemories,
   formatMemoriesForPrompt,

@@ -274,3 +274,13 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
 
 CREATE INDEX IF NOT EXISTS idx_agent_sessions_expires
   ON agent_sessions (expires_at);
+
+-- ------------------------------------------------------------
+-- memory_embeddings — vector store (JSON array; pgvector optional later)
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS memory_embeddings (
+  chunk_id        BIGINT PRIMARY KEY REFERENCES memory_chunks(id) ON DELETE CASCADE,
+  embedding       JSONB NOT NULL,
+  model           TEXT NOT NULL DEFAULT 'text-embedding-3-small',
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

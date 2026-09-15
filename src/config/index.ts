@@ -142,6 +142,9 @@ const envSchema = z.object({
   MEMORY_CHAT_SUMMARY_AFTER: num(40),
   MEMORY_CHAT_TTL_DAYS: num(90),
   MEMORY_RAG_ENABLED: booleanish,
+  MEMORY_EMBED_API_KEY: z.string().default(''),
+  MEMORY_EMBED_BASE_URL: z.string().default('https://api.openai.com/v1'),
+  MEMORY_EMBED_MODEL: z.string().default('text-embedding-3-small'),
 });
 
 export type AppConfig = z.infer<typeof envSchema>;

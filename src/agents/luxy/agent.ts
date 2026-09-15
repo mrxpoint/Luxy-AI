@@ -33,6 +33,7 @@ import type { LuxyEnginePrediction } from '../../engine/index.js';
 import { logger } from '../../utils/logger.js';
 import { config } from '../../config/index.js';
 import type { BacktestResult, LuxyIntent, ScoredCandidate } from '../../types/index.js';
+import { retrieveMemories, formatMemoriesForPrompt } from '../../memory/index.js';
 
 const log = logger.child({ module: 'luxy-agent' });
 
@@ -190,6 +191,9 @@ export async function evaluateCandidate(candidate: ScoredCandidate): Promise<Lux
 
   const lessons = await getHivemindLessons();
   const state = await portfolioSummary();
+  const ragQuery = `${candidate.symbol ?? ''} ${candidate.chain} liquidity volume ${candidate.llmVerdict ?? ''}`;
+  const ragChunks = await retrieveMemories(ragQuery, 6);
+  const ragBlock = formatMemoriesForPrompt(ragChunks);
 
   // LuxyEngine quantitative prior (BLUEPRINT §3.1)
   let enginePred: LuxyEnginePrediction | null = null;
@@ -263,7 +267,10 @@ export async function evaluateCandidate(candidate: ScoredCandidate): Promise<Lux
     preflightJson: preflight ? JSON.stringify(preflight, null, 2) : null,
     enginePrediction:
       mode !== 'llm_only' && enginePred ? formatPredictionForPrompt(enginePred) : null,
-    hivemindLessons: lessons,
+    hivemindLessons: [
+      ...lessons,
+      ...(ragChunks.length ? [`[RAG]\n${ragBlock}`] : []),
+    ],
     openPositions: state.openPositions,
     dailyDrawdownPct: state.dailyDrawdownPct,
   });

@@ -131,9 +131,15 @@ async function cmdEngine(rest: string[]): Promise<void> {
     setEnvKey('LUXY_ENGINE_MODE', rest[modeIdx + 1]!);
   }
   if (rest.includes('retrain') || rest.includes('--retrain')) {
-    const { calibrateBaselineFromPositions } = await import('../src/engine/calibrate.js');
-    const r = await calibrateBaselineFromPositions();
-    console.log('calibrate:', r);
+    const activate = rest.includes('--activate');
+    const { trainAndSaveArtifact, clearArtifactCache } = await import('../src/engine/index.js');
+    const r = await trainAndSaveArtifact({ activate });
+    if (r) {
+      clearArtifactCache();
+      console.log('trained:', r.version, r.metrics);
+    } else {
+      console.log('train skipped — not enough samples');
+    }
   }
   // Show current
   const envPath = resolve(ROOT, '.env');

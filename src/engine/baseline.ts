@@ -33,11 +33,14 @@ export const BASELINE_MODEL_VERSION = 'baseline-v1';
 export function predictBaseline(
   features: Record<string, number>,
   startedAt: number,
+  artifact?: { weights: Record<string, number>; bias: number; version?: string },
 ): LuxyEnginePrediction {
   const contributions: FeatureContribution[] = [];
-  let raw = BIAS;
+  const weightMap = artifact?.weights ?? WEIGHTS;
+  const bias = artifact?.bias ?? BIAS;
+  let raw = bias;
 
-  for (const [name, w] of Object.entries(WEIGHTS)) {
+  for (const [name, w] of Object.entries(weightMap)) {
     const x = features[name] ?? 0;
     // Normalize a few unbounded-ish features into roughly 0..1 for scoring
     let xn = x;
@@ -67,7 +70,7 @@ export function predictBaseline(
     action_bias,
     top_features: top,
     model: 'baseline',
-    model_version: BASELINE_MODEL_VERSION,
+    model_version: artifact?.version ?? BASELINE_MODEL_VERSION,
     raw_features: { ...features },
     inference_ms: Math.max(0, Date.now() - startedAt),
     created_at: new Date().toISOString(),

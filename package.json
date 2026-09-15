@@ -37,6 +37,8 @@
     "test:hl-signing": "tsx scripts/test-hyperliquid-signing.ts",
     "test:pm-live": "tsx scripts/test-polymarket-live.ts",
     "luxy": "tsx scripts/luxy-cli.ts",
+    "engine:train": "tsx scripts/engine-train.ts",
+    "engine:calibrate": "tsx scripts/engine-calibrate.ts",
     "dev:backtest": "tsx src/backtest/worker.ts",
     "engine:calibrate": "tsx scripts/engine-calibrate.ts"
   },

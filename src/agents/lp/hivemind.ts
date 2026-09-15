@@ -9,6 +9,7 @@
 import { query } from '../../db/pool.js';
 import { audit } from '../../db/audit.js';
 import { logger } from '../../utils/logger.js';
+import { ingestLessonChunk } from '../../memory/index.js';
 
 const log = logger.child({ module: 'hivemind' });
 
@@ -40,6 +41,13 @@ export async function recordLesson(l: LpLessonInput): Promise<void> {
   );
   log.info({ pool: l.poolId, action: l.action }, 'lesson recorded');
   await audit('lp-agent', 'hivemind_lesson', l);
+  await ingestLessonChunk({
+    poolId: l.poolId,
+    action: l.action,
+    outcome: l.outcomeSummary,
+    agent: 'lp',
+    chain: l.chain,
+  });
 }
 
 export async function getRecentLessons(limit = 10): Promise<string[]> {
