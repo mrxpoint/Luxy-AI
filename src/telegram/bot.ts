@@ -19,6 +19,9 @@ import {
   loadRecentMessages,
 } from '../memory/index.js';
 import { engineEnabled, engineMode, engineBackend } from '../engine/index.js';
+import { retrieveMemories, formatMemoriesForPrompt, syncLessonsToChunks } from '../memory/index.js';
+import { enqueueBacktest } from '../redis/queues.js';
+import { runBacktestJob } from '../backtest/runner.js';
 import { logger } from '../utils/logger.js';
 
 const log = logger.child({ module: 'telegram-bot' });
@@ -52,6 +55,9 @@ export async function startBot(): Promise<Bot | null> {
         '/pause — halt all new execution',
         '/resume — resume execution',
         '/engine — LuxyEngine backend + mode',
+        '/memory <q> — search lesson memory',
+        '/backtest <SYMBOL> [days] — research backtest',
+        '/candles <SYMBOL> [interval] [days]',
         '/proposals — list pending strategy proposals',
         '/approve <id> — activate a proposal',
         '/reject <id> — discard a proposal',
@@ -188,6 +194,106 @@ export async function startBot(): Promise<Bot | null> {
         '',
         'Set LUXY_ENGINE_ENABLED / BACKEND / MODE in .env and restart agent.',
       ].join('\n'),
+    );
+  });
+
+  bot.command('memory', async (ctx) => {
+    if (!authorized(ctx)) return;
+    const q = ctx.message?.text?.replace(/^\/memory\s*/, '').trim();
+    if (!q) return void ctx.reply('Usage: /memory <query>');
+    await syncLessonsToChunks(30);
+    const chunks = await retrieveMemories(q);
+    await ctx.reply(formatMemoriesForPrompt(chunks).slice(0, 3500));
+  });
+
+  bot.command('backtest', async (ctx) => {
+    if (!authorized(ctx)) return;
+    const raw = ctx.message?.text?.replace(/^\/backtest\s*/, '').trim() ?? '';
+    // /backtest BTC 30  or /backtest hyperliquid BTC 1h 30
+    const parts = raw.split(/\s+/).filter(Boolean);
+    if (parts.length === 0) {
+      return void ctx.reply(
+        'Usage:\n/backtest <SYMBOL> [days]\n/backtest hyperliquid <SYMBOL> <interval> <days>\n/backtest replay [days]',
+      );
+    }
+    let venue: 'hyperliquid' | 'replay_signals' = 'hyperliquid';
+    let symbol = 'BTC';
+    let interval = '1h';
+    let days = 30;
+    if (parts[0] === 'replay') {
+      venue = 'replay_signals';
+      days = Number(parts[1]) || 30;
+      symbol = 'signals';
+    } else if (parts[0] === 'hyperliquid' || parts[0] === 'birdeye') {
+      venue = 'hyperliquid';
+      symbol = (parts[1] ?? 'BTC').toUpperCase();
+      interval = parts[2] ?? '1h';
+      days = Number(parts[3]) || 30;
+    } else {
+      symbol = parts[0]!.toUpperCase();
+      days = Number(parts[1]) || 30;
+    }
+    const userRef = String(ctx.chat?.id ?? 'tg');
+    await ctx.reply(`Queuing backtest ${venue} ${symbol} ${interval} ${days}d…`);
+    try {
+      const jobId = await enqueueBacktest({
+        source: 'telegram',
+        userRef,
+        venue,
+        symbolOrMarket: symbol,
+        interval,
+        days,
+        engine: 'local-ts',
+      });
+      // Also run inline so user gets result without requiring separate worker
+      const result = await runBacktestJob(jobId, {
+        source: 'telegram',
+        userRef,
+        venue,
+        symbolOrMarket: symbol,
+        interval,
+        days,
+        engine: 'local-ts',
+      });
+      if (result.status === 'done' && result.metrics) {
+        const m = result.metrics;
+        await ctx.reply(
+          [
+            `Backtest ${jobId}`,
+            `win_rate ${(m.win_rate * 100).toFixed(1)}%`,
+            `sharpe ${m.sharpe.toFixed(2)}`,
+            `max_dd ${(m.max_drawdown * 100).toFixed(1)}%`,
+            `n_trades ${m.n_trades}`,
+            `candles ${result.chartPoints ?? '—'} source=${result.source ?? '—'}`,
+          ].join('\n'),
+        );
+      } else {
+        await ctx.reply(`Backtest failed: ${result.error ?? 'unknown'}`);
+      }
+    } catch (err) {
+      await ctx.reply(`Backtest error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  });
+
+  bot.command('candles', async (ctx) => {
+    if (!authorized(ctx)) return;
+    const raw = ctx.message?.text?.replace(/^\/candles\s*/, '').trim() ?? '';
+    const parts = raw.split(/\s+/).filter(Boolean);
+    if (parts.length < 1) {
+      return void ctx.reply('Usage: /candles <SYMBOL> [interval] [days]\nExample: /candles BTC 1h 30');
+    }
+    const { fetchHistorical } = await import('../market/historical.js');
+    const symbol = parts[0]!.toUpperCase();
+    const interval = parts[1] ?? '1h';
+    const days = Number(parts[2]) || 30;
+    const hist = await fetchHistorical({
+      venue: 'hyperliquid',
+      symbolOrMarket: symbol,
+      interval,
+      days,
+    });
+    await ctx.reply(
+      `candles ${symbol} ${interval}: ${hist.series.length} bars (source=${hist.source})${hist.note ? '\n' + hist.note : ''}`,
     );
   });
 

@@ -130,6 +130,11 @@ async function cmdEngine(rest: string[]): Promise<void> {
   if (modeIdx >= 0 && rest[modeIdx + 1]) {
     setEnvKey('LUXY_ENGINE_MODE', rest[modeIdx + 1]!);
   }
+  if (rest.includes('retrain') || rest.includes('--retrain')) {
+    const { calibrateBaselineFromPositions } = await import('../src/engine/calibrate.js');
+    const r = await calibrateBaselineFromPositions();
+    console.log('calibrate:', r);
+  }
   // Show current
   const envPath = resolve(ROOT, '.env');
   const text = existsSync(envPath) ? readFileSync(envPath, 'utf8') : '';
@@ -146,24 +151,56 @@ async function cmdEngine(rest: string[]): Promise<void> {
 }
 
 async function cmdCandles(rest: string[]): Promise<void> {
-  const venue = flag(rest, '--venue') ?? 'hyperliquid';
+  const venue = (flag(rest, '--venue') ?? 'hyperliquid') as 'hyperliquid' | 'birdeye' | 'polymarket';
   const symbol = flag(rest, '--symbol') ?? 'BTC';
-  const days = flag(rest, '--days') ?? '30';
+  const days = Number(flag(rest, '--days') ?? '30');
+  const interval = flag(rest, '--interval') ?? '1h';
+  const { fetchHistorical } = await import('../src/market/historical.js');
+  const hist = await fetchHistorical({ venue, symbolOrMarket: symbol, days, interval });
   console.log(
-    `Candle fetch requested: venue=${venue} symbol=${symbol} days=${days}\n` +
-      `Ingest service uses Hyperliquid/Birdeye APIs via candle-ingest.\n` +
-      `Full interactive pull is wired through the running stack + Timescale cache (BLUEPRINT §9.5).\n` +
-      `Ensure candle-ingest is up: docker compose -f ${COMPOSE_FILE} logs -f candle-ingest`,
+    JSON.stringify(
+      {
+        venue: hist.venue,
+        symbol,
+        interval,
+        bars: hist.series.length,
+        source: hist.source,
+        cached: hist.cached,
+        note: hist.note,
+        first: hist.series[0] ?? null,
+        last: hist.series[hist.series.length - 1] ?? null,
+      },
+      null,
+      2,
+    ),
   );
 }
 
 async function cmdBacktest(rest: string[]): Promise<void> {
-  console.log(
-    `Backtest job (BLUEPRINT §10.4)\n` +
-      `Flags: ${rest.join(' ') || '(none)'}\n` +
-      `Enqueue path uses BullMQ "backtest" queue when worker is deployed.\n` +
-      `In-session E2B/local backtest already runs inside luxy-agent on each signal.`,
-  );
+  const venueRaw = flag(rest, '--venue') ?? 'hyperliquid';
+  const symbol = flag(rest, '--symbol') ?? 'BTC';
+  const days = Number(flag(rest, '--days') ?? '30');
+  const interval = flag(rest, '--interval') ?? '1h';
+  const venue =
+    venueRaw === 'replay' || venueRaw === 'replay_signals'
+      ? 'replay_signals'
+      : venueRaw === 'birdeye'
+        ? 'birdeye'
+        : venueRaw === 'polymarket'
+          ? 'polymarket'
+          : 'hyperliquid';
+  const { runBacktestJob } = await import('../src/backtest/runner.js');
+  const jobId = `cli_${Date.now()}`;
+  const result = await runBacktestJob(jobId, {
+    source: 'cli',
+    userRef: 'cli',
+    venue,
+    symbolOrMarket: symbol,
+    interval,
+    days,
+    engine: 'local-ts',
+  });
+  console.log(JSON.stringify(result, null, 2));
 }
 
 function flag(rest: string[], name: string): string | undefined {

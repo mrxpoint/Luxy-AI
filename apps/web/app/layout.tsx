@@ -14,6 +14,7 @@ const NAV = [
   { href: '/positions', label: 'Positions' },
   { href: '/strategy', label: 'Strategy' },
   { href: '/evaluation', label: 'Evaluation' },
+  { href: '/backtest', label: 'Backtest' },
   { href: '/chat', label: 'Chat' },
 ];
 

@@ -82,6 +82,11 @@ services:
     command: node dist/engine/worker.js
     container_name: luxy-engine
 
+  backtest-worker:
+    <<: *service
+    command: node dist/backtest/worker.js
+    container_name: luxy-backtest
+
   web:
     build:
       context: .

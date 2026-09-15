@@ -36,7 +36,9 @@
     "healthcheck": "tsx scripts/healthcheck.ts",
     "test:hl-signing": "tsx scripts/test-hyperliquid-signing.ts",
     "test:pm-live": "tsx scripts/test-polymarket-live.ts",
-    "luxy": "tsx scripts/luxy-cli.ts"
+    "luxy": "tsx scripts/luxy-cli.ts",
+    "dev:backtest": "tsx src/backtest/worker.ts",
+    "engine:calibrate": "tsx scripts/engine-calibrate.ts"
   },
   "dependencies": {
     "@e2b/code-interpreter": "^1.0.0",

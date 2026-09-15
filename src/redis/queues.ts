@@ -1,13 +1,15 @@
 /**
- * BullMQ queue definitions (BLUEPRINT.md §5.2).
+ * BullMQ queue definitions (BLUEPRINT.md §5.2 / §10.4).
  *
  *   signals       screener/narrative → luxy-agent   (retry 3, backoff 5s)
  *   intents       luxy/perps/lp → executor          (retry 1)
  *   notifications all → telegram-bot                (retry 2, 1 msg/sec)
+ *   backtest      interactive research jobs         (retry 1)
  */
 import { Queue } from 'bullmq';
 import { config } from '../config/index.js';
 import type { LuxyIntent, NotificationJob, ScoredCandidate, PoolCandidate, PerpsSignal } from '../types/index.js';
+import type { BacktestJobRequest } from '../backtest/types.js';
 
 const connection = { url: config.REDIS_URL };
 
@@ -50,12 +52,35 @@ export interface SignalJobData {
   pool?: PoolCandidate;
 }
 
+const backtestOpts = {
+  connection,
+  defaultJobOptions: {
+    attempts: 1,
+    removeOnComplete: { count: 100 },
+    removeOnFail: { count: 100 },
+  },
+};
+
 export const signalQueue = new Queue<SignalJobData>('signals', signalsOpts);
 export const intentQueue = new Queue<LuxyIntent>('intents', intentsOpts);
 export const notificationQueue = new Queue<NotificationJob>('notifications', notificationsOpts);
+export const backtestQueue = new Queue<BacktestJobRequest>('backtest', backtestOpts);
 
 export async function closeQueues(): Promise<void> {
-  await Promise.all([signalQueue.close(), intentQueue.close(), notificationQueue.close()]);
+  await Promise.all([
+    signalQueue.close(),
+    intentQueue.close(),
+    notificationQueue.close(),
+    backtestQueue.close(),
+  ]);
+}
+
+/** Enqueue an interactive backtest job (read-only). Returns BullMQ job id. */
+export async function enqueueBacktest(req: BacktestJobRequest): Promise<string> {
+  const job = await backtestQueue.add('backtest', req, {
+    jobId: undefined,
+  });
+  return String(job.id);
 }
 
 /** Fire-and-forget notification enqueue (never throws). */

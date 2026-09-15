@@ -1,6 +1,5 @@
 /**
  * Memory layer exports (BLUEPRINT.md §8.4).
- * RAG (pgvector) hooks land in a follow-up; conversation is available now.
  */
 export {
   getOrCreateSession,
@@ -11,3 +10,10 @@ export {
   type ChatRole,
   type ChatMessage,
 } from './conversation.js';
+
+export {
+  ingestLessonChunk,
+  syncLessonsToChunks,
+  retrieveMemories,
+  formatMemoriesForPrompt,
+} from './rag.js';
