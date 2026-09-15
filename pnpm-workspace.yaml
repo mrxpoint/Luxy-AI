@@ -1,0 +1,7 @@
+packages:
+  - "apps/*"
+onlyBuiltDependencies:
+  - bufferutil
+  - esbuild
+  - msgpackr-extract
+  - utf-8-validate

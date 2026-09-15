@@ -1,0 +1,50 @@
+# Luxy AI — local development infrastructure
+# Postgres 16 + Redis 7. Start with: docker compose up -d
+#
+# The application processes themselves run on the host (PM2 / tsx),
+# matching the Phase 1-3 deployment architecture in BLUEPRINT.md §13.
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: luxy-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: luxy
+      POSTGRES_PASSWORD: luxy_dev_password
+      POSTGRES_DB: luxydb
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U luxy -d luxydb"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  cache:
+    image: redis:7-alpine
+    container_name: luxy-redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --maxmemory 512mb
+      --maxmemory-policy noeviction
+      --appendonly yes
+      --save 900 1
+      --save 300 10
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pg-data:
+  redis-data:
