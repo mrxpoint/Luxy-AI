@@ -4,11 +4,11 @@
  * Processing pipeline per signal:
  *   1. Get signal context (scored candidate from the queue)
  *   2. Fetch OHLCV (Birdeye) when available
- *   3. Validate in code: momentum backtest via E2B sandbox, or the
- *      identical local TS engine when E2B is not configured
- *   4. Prime the LLM with context + backtest metrics + HiveMind lessons
- *   5. Parse structured LuxyIntent JSON
- *   6. Submit to the intents queue (executor enforces risk)
+ *   3. LuxyEngine quantitative prediction (when enabled)
+ *   4. Validate in code: momentum backtest via E2B / local TS
+ *   5. Mode: engine_only | engine_plus_llm | llm_only
+ *   6. Parse structured LuxyIntent JSON / map engine bias
+ *   7. Submit to the intents queue (executor enforces risk)
  */
 import { query } from '../../db/pool.js';
 import { audit } from '../../db/audit.js';
@@ -18,11 +18,18 @@ import {
   LUXY_SYSTEM_PROMPT,
   buildSignalEvaluationMessage,
 } from '../../llm/prompts/luxy-system.js';
-import { personaPrompt, ROLE_CORE_DECIDER } from '../../llm/prompts/persona.js';
 import { fetchOhlcv, birdeyeConfigured } from '../../screener/birdeye.js';
 import { runMomentumBacktest } from '../../e2b/backtest.js';
 import { preflightAnalysis } from '../../e2b/analysis.js';
 import { LuxySandbox } from '../../e2b/sandbox.js';
+import {
+  engineEnabled,
+  engineMode,
+  predict as enginePredict,
+  formatPredictionForPrompt,
+  biasToAction,
+} from '../../engine/index.js';
+import type { LuxyEnginePrediction } from '../../engine/index.js';
 import { logger } from '../../utils/logger.js';
 import { config } from '../../config/index.js';
 import type { BacktestResult, LuxyIntent, ScoredCandidate } from '../../types/index.js';
@@ -155,7 +162,7 @@ async function activeStrategyVersion(agent: string): Promise<number> {
 export async function evaluateCandidate(candidate: ScoredCandidate): Promise<LuxyIntent> {
   const baseIntent: LuxyIntent = {
     action: 'hold',
-    agent: 'meme',
+    agent: candidate.agent ?? 'meme',
     chain: candidate.chain,
     token: candidate.token,
     symbol: candidate.symbol,
@@ -173,7 +180,10 @@ export async function evaluateCandidate(candidate: ScoredCandidate): Promise<Lux
     ? preflightAnalysis({
         backtest,
         portfolioUsd: config.PAPER_PORTFOLIO_USD,
-        entryUsd: Math.min(config.PAPER_PORTFOLIO_USD * config.RISK_MAX_POSITION_PCT, candidate.liquidityUsd * 0.01),
+        entryUsd: Math.min(
+          config.PAPER_PORTFOLIO_USD * config.RISK_MAX_POSITION_PCT,
+          candidate.liquidityUsd * 0.01,
+        ),
         liquidityUsd: candidate.liquidityUsd,
       })
     : null;
@@ -181,6 +191,54 @@ export async function evaluateCandidate(candidate: ScoredCandidate): Promise<Lux
   const lessons = await getHivemindLessons();
   const state = await portfolioSummary();
 
+  // LuxyEngine quantitative prior (BLUEPRINT §3.1)
+  let enginePred: LuxyEnginePrediction | null = null;
+  if (engineEnabled()) {
+    try {
+      enginePred = await enginePredict(candidate, {
+        openPositions: state.openPositions,
+        dailyDrawdownPct: state.dailyDrawdownPct,
+      });
+      log.info(
+        {
+          symbol: candidate.symbol,
+          score: enginePred.score,
+          bias: enginePred.action_bias,
+          model: enginePred.model_version,
+        },
+        'luxy-engine prediction',
+      );
+    } catch (err) {
+      log.warn({ err }, 'luxy-engine predict failed');
+    }
+  }
+
+  const mode = engineEnabled() ? engineMode() : 'llm_only';
+
+  // engine_only: map bias → intent without LLM
+  if (mode === 'engine_only' && enginePred) {
+    const action = biasToAction(enginePred.action_bias);
+    const sizeUsd =
+      action === 'entry'
+        ? Math.min(
+            config.PAPER_PORTFOLIO_USD * config.RISK_MAX_POSITION_PCT,
+            Math.max(10, candidate.liquidityUsd * 0.005),
+          )
+        : undefined;
+    return {
+      ...baseIntent,
+      action,
+      sizeUsd,
+      confidence: enginePred.confidence,
+      reasoning: `engine_only ${enginePred.model}@${enginePred.model_version}: score=${enginePred.score.toFixed(3)} bias=${enginePred.action_bias}; top=${enginePred.top_features
+        .slice(0, 3)
+        .map((f) => f.name)
+        .join(',')}`,
+      backtest: backtest ?? undefined,
+    };
+  }
+
+  // llm_only or engine_plus_llm (default)
   const adapter = luxyLLM();
   const userMsg = buildSignalEvaluationMessage({
     candidateJson: JSON.stringify(
@@ -203,6 +261,8 @@ export async function evaluateCandidate(candidate: ScoredCandidate): Promise<Lux
     ),
     backtestJson: backtest ? JSON.stringify(backtest, null, 2) : null,
     preflightJson: preflight ? JSON.stringify(preflight, null, 2) : null,
+    enginePrediction:
+      mode !== 'llm_only' && enginePred ? formatPredictionForPrompt(enginePred) : null,
     hivemindLessons: lessons,
     openPositions: state.openPositions,
     dailyDrawdownPct: state.dailyDrawdownPct,
@@ -210,6 +270,15 @@ export async function evaluateCandidate(candidate: ScoredCandidate): Promise<Lux
 
   const res = await tryChat(adapter, [{ role: 'user', content: userMsg }], LUXY_SYSTEM_PROMPT);
   if (!res) {
+    // Fail-soft: if engine said entry/watch, surface that; else hold
+    if (enginePred && enginePred.action_bias === 'entry') {
+      return {
+        ...baseIntent,
+        action: 'hold',
+        confidence: enginePred.confidence * 0.5,
+        reasoning: `llm unavailable — engine bias=${enginePred.action_bias} score=${enginePred.score.toFixed(3)} but fail-safe hold without LLM confirmation`,
+      };
+    }
     return {
       ...baseIntent,
       reasoning: 'llm unavailable — defaulting to hold (fail-safe)',

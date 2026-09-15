@@ -193,3 +193,84 @@ CREATE TABLE IF NOT EXISTS model_evals (
   notes           TEXT,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- ------------------------------------------------------------
+-- engine_models — LuxyEngine model registry (BLUEPRINT.md §3.1 / §8.1)
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS engine_models (
+  id              BIGSERIAL PRIMARY KEY,
+  backend         TEXT NOT NULL,               -- baseline | lightgbm | xgboost | catboost | pytorch
+  version         TEXT NOT NULL,
+  agent           TEXT NOT NULL DEFAULT 'meme',
+  metrics         JSONB NOT NULL DEFAULT '{}',
+  artifact_path   TEXT,
+  active          BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (backend, version, agent)
+);
+
+CREATE INDEX IF NOT EXISTS idx_engine_models_active
+  ON engine_models (agent, active, created_at DESC);
+
+-- ------------------------------------------------------------
+-- chat_sessions / chat_messages — conversation memory (§8.4.2)
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS chat_sessions (
+  id              BIGSERIAL PRIMARY KEY,
+  channel         TEXT NOT NULL,               -- telegram | web | api
+  user_ref        TEXT NOT NULL,
+  agent_scope     TEXT NOT NULL DEFAULT 'luxy',
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_active_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_sessions_user
+  ON chat_sessions (channel, user_ref, last_active_at DESC);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id              BIGSERIAL PRIMARY KEY,
+  session_id      BIGINT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+  role            TEXT NOT NULL,               -- user | assistant | system | tool
+  content         TEXT NOT NULL,
+  tool_calls      JSONB,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_messages_session
+  ON chat_messages (session_id, created_at);
+
+-- ------------------------------------------------------------
+-- memory_chunks — RAG text store (§8.4.4); embeddings optional later
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS memory_chunks (
+  id              BIGSERIAL PRIMARY KEY,
+  source_type     TEXT NOT NULL,               -- position | lesson | signal | backtest | note
+  source_id       TEXT,
+  agent           TEXT,
+  chain           TEXT,
+  symbol          TEXT,
+  content         TEXT NOT NULL,
+  metadata        JSONB NOT NULL DEFAULT '{}',
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_chunks_source
+  ON memory_chunks (source_type, source_id);
+
+CREATE INDEX IF NOT EXISTS idx_memory_chunks_agent
+  ON memory_chunks (agent, created_at DESC);
+
+-- ------------------------------------------------------------
+-- agent_sessions — short-lived working memory audit (§8.4.3)
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS agent_sessions (
+  id              BIGSERIAL PRIMARY KEY,
+  run_id          TEXT NOT NULL UNIQUE,
+  agent           TEXT NOT NULL,
+  payload         JSONB NOT NULL DEFAULT '{}',
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  expires_at      TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_sessions_expires
+  ON agent_sessions (expires_at);

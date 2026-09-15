@@ -54,6 +54,7 @@ export function buildSignalEvaluationMessage(input: {
   candidateJson: string;
   backtestJson: string | null;
   preflightJson?: string | null;
+  enginePrediction?: string | null;
   hivemindLessons: string[];
   openPositions: number;
   dailyDrawdownPct: number;
@@ -64,6 +65,9 @@ export function buildSignalEvaluationMessage(input: {
       : '- (no lessons yet)';
   return `SIGNAL CONTEXT:
 ${input.candidateJson}
+
+LUXYENGINE PREDICTION (quantitative layer — treat as strong prior):
+${input.enginePrediction ?? 'unavailable — engine disabled or failed'}
 
 BACKTEST (executed in sandbox terminal):
 ${input.backtestJson ?? 'unavailable — backtest failed or no candle data'}
@@ -76,7 +80,7 @@ ${lessons}
 
 PORTFOLIO STATE: open_positions=${input.openPositions}, daily_drawdown_pct=${(input.dailyDrawdownPct * 100).toFixed(2)}%
 
-Decide now. Respond with the JSON intent object only.`;
+Decide now. Respond with the JSON intent object only. Cite engine score/bias when relevant.`;
 }
 
 /** Builds a generic chat message for interactive user conversations (/chat, web chat). */

@@ -126,6 +126,22 @@ const envSchema = z.object({
   NARRATIVE_INTERVAL_MIN: num(20),
   POLYMARKET_INTERVAL_MIN: num(30),
   STRATEGY_TUNE_INTERVAL_MIN: num(60),
+
+  // LuxyEngine — quantitative layer (BLUEPRINT §3.1)
+  LUXY_ENGINE_ENABLED: booleanish,
+  LUXY_ENGINE_MODE: z
+    .enum(['engine_only', 'engine_plus_llm', 'llm_only'])
+    .default('engine_plus_llm'),
+  LUXY_ENGINE_BACKEND: z
+    .enum(['baseline', 'lightgbm', 'xgboost', 'catboost', 'pytorch'])
+    .default('baseline'),
+  LUXY_ENGINE_MODEL_VERSION: z.string().default('latest'),
+
+  // Conversation memory (BLUEPRINT §8.4.2)
+  MEMORY_CHAT_MAX_MESSAGES: num(30),
+  MEMORY_CHAT_SUMMARY_AFTER: num(40),
+  MEMORY_CHAT_TTL_DAYS: num(90),
+  MEMORY_RAG_ENABLED: booleanish,
 });
 
 export type AppConfig = z.infer<typeof envSchema>;

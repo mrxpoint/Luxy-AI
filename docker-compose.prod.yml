@@ -73,6 +73,15 @@ services:
     command: node dist/telegram/index.js
     container_name: luxy-telegram
 
+  # LuxyEngine maintenance worker (BLUEPRINT §3.1 / §13.3.5).
+  # Inference runs in-process in luxy-agent; enable with:
+  #   docker compose -f docker-compose.prod.yml --profile engine up -d
+  luxy-engine:
+    <<: *service
+    profiles: ["engine", "engine-torch"]
+    command: node dist/engine/worker.js
+    container_name: luxy-engine
+
   web:
     build:
       context: .

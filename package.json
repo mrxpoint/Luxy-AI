@@ -35,7 +35,8 @@
     "preflight:live": "tsx scripts/preflight-live.ts",
     "healthcheck": "tsx scripts/healthcheck.ts",
     "test:hl-signing": "tsx scripts/test-hyperliquid-signing.ts",
-    "test:pm-live": "tsx scripts/test-polymarket-live.ts"
+    "test:pm-live": "tsx scripts/test-polymarket-live.ts",
+    "luxy": "tsx scripts/luxy-cli.ts"
   },
   "dependencies": {
     "@e2b/code-interpreter": "^1.0.0",

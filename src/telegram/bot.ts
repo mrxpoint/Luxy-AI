@@ -1,8 +1,8 @@
 /**
  * grammY Telegram bot (BLUEPRINT.md §10.2).
- * Commands: /start /status /positions /signals /pause /resume /chat
+ * Commands: /start /status /positions /signals /pause /resume /chat /newchat /engine
  *           /proposals /approve /reject (strategy self-tuning, §5.3)
- * /pause uses an inline keyboard confirmation; /chat forwards to the Luxy agent.
+ * /pause uses an inline keyboard confirmation; /chat uses conversation memory.
  */
 import { Bot, InlineKeyboard } from 'grammy';
 import { config } from '../config/index.js';
@@ -12,6 +12,13 @@ import { isPaused, setPaused } from '../redis/connection.js';
 import { luxyLLM, tryChat } from '../llm/adapter.js';
 import { buildChatSystemPrompt } from '../llm/prompts/luxy-system.js';
 import { listProposals, approveProposal, rejectProposal } from '../strategy/index.js';
+import {
+  getOrCreateSession,
+  startNewSession,
+  appendMessage,
+  loadRecentMessages,
+} from '../memory/index.js';
+import { engineEnabled, engineMode, engineBackend } from '../engine/index.js';
 import { logger } from '../utils/logger.js';
 
 const log = logger.child({ module: 'telegram-bot' });
@@ -44,10 +51,12 @@ export async function startBot(): Promise<Bot | null> {
         '/signals — last 5 signals',
         '/pause — halt all new execution',
         '/resume — resume execution',
+        '/engine — LuxyEngine backend + mode',
         '/proposals — list pending strategy proposals',
         '/approve <id> — activate a proposal',
         '/reject <id> — discard a proposal',
-        '/chat <msg> — talk to Luxy',
+        '/chat <msg> — talk to Luxy (multi-turn memory)',
+        '/newchat — start a fresh chat session',
       ].join('\n'),
       { parse_mode: 'Markdown' },
     ),
@@ -131,13 +140,55 @@ export async function startBot(): Promise<Bot | null> {
     if (!authorized(ctx)) return;
     const msg = ctx.message?.text?.replace(/^\/chat\s*/, '').trim();
     if (!msg) return void ctx.reply('Usage: /chat <message>');
+    const userRef = String(ctx.chat?.id ?? 'unknown');
+    const sessionId = await getOrCreateSession('telegram', userRef);
+    if (sessionId) await appendMessage(sessionId, 'user', msg);
+
+    const history =
+      sessionId != null
+        ? await loadRecentMessages(sessionId, config.MEMORY_CHAT_MAX_MESSAGES)
+        : [];
     const open = await query<{ n: number }>(`SELECT COUNT(*)::int AS n FROM positions WHERE status='open'`);
+    // history already includes the user message we just appended
+    const chatMessages =
+      history.length > 0
+        ? history.map((m) => ({
+            role: m.role as 'user' | 'assistant' | 'system',
+            content: m.content,
+          }))
+        : [{ role: 'user' as const, content: msg }];
+
     const res = await tryChat(
       luxyLLM(),
-      [{ role: 'user', content: msg }],
-      buildChatSystemPrompt(`open_positions=${open.rows[0]?.n ?? 0}; dry_run=${config.DRY_RUN}`),
+      chatMessages,
+      buildChatSystemPrompt(
+        `open_positions=${open.rows[0]?.n ?? 0}; dry_run=${config.DRY_RUN}; engine=${engineEnabled() ? `${engineBackend()}/${engineMode()}` : 'off'}`,
+      ),
     );
-    await ctx.reply(res?.text?.slice(0, 4000) ?? 'Luxy is unavailable right now (LLM not configured or failed).');
+    const reply = res?.text?.slice(0, 4000) ?? 'Luxy is unavailable right now (LLM not configured or failed).';
+    if (sessionId && res?.text) await appendMessage(sessionId, 'assistant', reply);
+    await ctx.reply(reply);
+  });
+
+  bot.command('newchat', async (ctx) => {
+    if (!authorized(ctx)) return;
+    const userRef = String(ctx.chat?.id ?? 'unknown');
+    const id = await startNewSession('telegram', userRef);
+    await ctx.reply(id ? `New chat session #${id} started.` : 'Could not start session (DB?).');
+  });
+
+  bot.command('engine', async (ctx) => {
+    if (!authorized(ctx)) return;
+    await ctx.reply(
+      [
+        `LuxyEngine: ${engineEnabled() ? 'ON' : 'OFF'}`,
+        `backend: ${engineBackend()}`,
+        `mode: ${engineMode()}`,
+        `model_version: ${config.LUXY_ENGINE_MODEL_VERSION}`,
+        '',
+        'Set LUXY_ENGINE_ENABLED / BACKEND / MODE in .env and restart agent.',
+      ].join('\n'),
+    );
   });
 
   // ---- Strategy self-tuning approvals (BLUEPRINT §5.3) ----
