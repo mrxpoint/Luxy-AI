@@ -204,6 +204,8 @@ pnpm db:migrate
 # 6. Bootstrap wallets (one-time, manual)
 pnpm bootstrap-wallet --agent=meme --chain=solana
 pnpm bootstrap-wallet --agent=lp --chain=solana
+pnpm bootstrap-wallet --agent=meme --chain=evm    # Base + Ethereum, one EOA
+# or: --chain=base | --chain=ethereum
 
 # 7. Start all processes (development)
 pnpm dev:screener    # Meme agent screener

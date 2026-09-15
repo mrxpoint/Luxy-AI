@@ -91,6 +91,7 @@ npx tsx scripts/preflight-live.ts
 
 ```bash
 pnpm bootstrap-wallet --agent=meme --chain=solana   # prints the secret ONCE → store in sops
+pnpm bootstrap-wallet --agent=meme --chain=evm      # Base + Ethereum EOA → EVM_EXECUTOR_PRIVATE_KEY
 ```
 
 - `SOLANA_PRIVATE_KEY` — base58 secret from the bootstrap output
@@ -112,7 +113,7 @@ pnpm bootstrap-wallet --agent=meme --chain=solana   # prints the secret ONCE →
 
 ### 5.3 EVM (Base + Ethereum — Uniswap v3)
 
-- `EVM_EXECUTOR_PRIVATE_KEY` — funded EOA key
+- `EVM_EXECUTOR_PRIVATE_KEY` — funded EOA key (from `bootstrap-wallet --chain=evm` or external)
 - `BASE_SWAP_ROUTER_02` — required for live Base swaps (Ethereum default is the canonical
   SwapRouter02; override via `ETHEREUM_SWAP_ROUTER_02`)
 - **Allowances are never opened automatically.** Approve USDC to the router manually
