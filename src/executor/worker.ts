@@ -114,6 +114,11 @@ async function processIntent(job: Job<LuxyIntent>): Promise<{ status: string; no
         lowerBin: fill.lowerBin,
         upperBin: fill.upperBin,
         bins: [fill.lowerBin, fill.upperBin],
+        amountX: fill.amountX,
+        amountY: fill.amountY,
+        decimalsX: fill.decimalsX,
+        decimalsY: fill.decimalsY,
+        priceXy: fill.priceXy,
       });
     } else if (intent.chain === 'solana') {
       const amountRaw = Math.round((intent.sizeUsd ?? 0) * 10 ** 6);
@@ -186,6 +191,11 @@ interface FillMeta {
   lowerBin?: number;
   upperBin?: number;
   bins?: [number, number];
+  amountX?: string;
+  amountY?: string;
+  decimalsX?: number;
+  decimalsY?: number;
+  priceXy?: number | null;
 }
 
 async function insertPosition(
