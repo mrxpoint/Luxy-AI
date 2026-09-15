@@ -18,6 +18,7 @@ import { logger } from '../utils/logger.js';
 import type { ScoredCandidate } from '../types/index.js';
 import { extractFeatures } from './features.js';
 import { predictBaseline } from './baseline.js';
+import { loadLgbmArtifact, predictLgbm, type LgbmArtifact } from './lgbm.js';
 import type {
   EngineBackend,
   EngineContext,
@@ -84,7 +85,7 @@ async function loadActiveArtifact(): Promise<TrainedArtifact | null> {
     const dir = resolve(process.cwd(), 'models');
     if (existsSync(dir)) {
       const files = readdirSync(dir)
-        .filter((f) => f.startsWith('engine-') && f.endsWith('.json'))
+        .filter((f) => (f.startsWith('engine-') || f.startsWith('engine-lgbm-')) && f.endsWith('.json'))
         .sort()
         .reverse();
       if (files[0]) {
@@ -120,19 +121,32 @@ export async function predict(
   const artifact = await loadActiveArtifact();
 
   if (artifact) {
-    const pred = predictBaseline(features, t0, {
-      weights: artifact.weights,
-      bias: artifact.bias,
-      version: artifact.version,
-    });
-    return {
-      ...pred,
-      model: backend === 'baseline' ? 'baseline' : backend,
-      model_version:
-        backend === 'baseline'
-          ? artifact.version
-          : `${backend}@${artifact.version}+logistic-compat`,
-    };
+    // LightGBM JSON ensemble
+    if (
+      (artifact as { backend?: string }).backend === 'lightgbm' ||
+      backend === 'lightgbm'
+    ) {
+      const lgbm = artifact as unknown as LgbmArtifact;
+      if (lgbm.trees && lgbm.feature_names) {
+        return predictLgbm(features, lgbm, t0);
+      }
+    }
+    // Logistic / baseline weights
+    if ((artifact as { weights?: Record<string, number> }).weights) {
+      const pred = predictBaseline(features, t0, {
+        weights: (artifact as { weights: Record<string, number> }).weights,
+        bias: (artifact as { bias: number }).bias,
+        version: artifact.version,
+      });
+      return {
+        ...pred,
+        model: backend === 'baseline' ? 'baseline' : backend,
+        model_version:
+          backend === 'baseline'
+            ? artifact.version
+            : `${backend}@${artifact.version}+logistic-compat`,
+      };
+    }
   }
 
   if (backend !== 'baseline') {

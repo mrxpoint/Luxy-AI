@@ -19,6 +19,7 @@ import { uniswapQuote, uniswapExecute, EVM_TOKENS, type UniswapQuote } from './u
 import { hyperliquidExecute, fetchUserPositions } from '../agents/perps/hyperliquid.js';
 import { robinhoodExecute } from './robinhood.js';
 import { polymarketExecute } from '../agents/polymarket/executor.js';
+import { deployDlmmPosition, closeDlmmPosition } from './meteora-lp.js';
 const log = logger.child({ module: 'executor' });
 
 const MINT_DECIMALS: Record<string, number> = {
@@ -105,6 +106,15 @@ async function processIntent(job: Job<LuxyIntent>): Promise<{ status: string; no
     if (intent.chain === 'hyperliquid') {
       const fill = await hyperliquidExecute(intent);
       await insertPosition(intent, null, fill.note);
+    } else if (intent.chain === 'solana' && intent.agent === 'lp' && intent.poolId) {
+      // Meteora DLMM LP deploy (not a Jupiter token swap)
+      const fill = await deployDlmmPosition(intent);
+      await insertPosition(intent, fill.signature, fill.note, {
+        positionAddress: fill.positionAddress,
+        lowerBin: fill.lowerBin,
+        upperBin: fill.upperBin,
+        bins: [fill.lowerBin, fill.upperBin],
+      });
     } else if (intent.chain === 'solana') {
       const amountRaw = Math.round((intent.sizeUsd ?? 0) * 10 ** 6);
       const quote = await getQuote(
@@ -172,6 +182,10 @@ interface FillMeta {
   outAmount?: string; // solana: output token base units received at entry
   outRaw?: string; // evm: output token raw units received at entry
   shares?: number; // polymarket: shares bought at entry
+  positionAddress?: string; // meteora DLMM position pubkey
+  lowerBin?: number;
+  upperBin?: number;
+  bins?: [number, number];
 }
 
 async function insertPosition(
@@ -215,8 +229,10 @@ function deriveEntryPrice(intent: LuxyIntent, quote?: JupiterQuoteLite): number 
 
 interface OpenPositionRow {
   id: number;
+  agent: string;
   chain: string;
   token: string | null;
+  pool_id: string | null;
   size_usd: number;
   entry_price: number | null;
   intent: { fill?: FillMeta } | null;
@@ -224,12 +240,25 @@ interface OpenPositionRow {
 }
 
 async function findOpenPosition(intent: LuxyIntent): Promise<OpenPositionRow | null> {
+  // LP: match open row by pool_id when present
+  if (intent.agent === 'lp' && intent.poolId) {
+    const byPool = await query<OpenPositionRow>(
+      `SELECT p.id, p.agent, p.chain, p.token, p.pool_id, p.size_usd, p.entry_price, p.intent,
+              (p.intent->>'symbol') AS symbol
+       FROM positions p
+       WHERE p.status = 'open' AND p.agent = 'lp' AND p.pool_id = $1
+       ORDER BY p.opened_at ASC LIMIT 1`,
+      [intent.poolId],
+    );
+    if (byPool.rows[0]) return byPool.rows[0];
+  }
+
   // Prefer an exact token match; fall back to the oldest open row of the same
   // agent+chain ONLY when the intent carries no token at all (previously the
   // fallback applied even when a token was given, which could close the wrong
   // position).
   const exact = await query<OpenPositionRow>(
-    `SELECT p.id, p.chain, p.token, p.size_usd, p.entry_price, p.intent,
+    `SELECT p.id, p.agent, p.chain, p.token, p.pool_id, p.size_usd, p.entry_price, p.intent,
             (s.raw_data->>'baseToken'->>'symbol') AS symbol
      FROM positions p
      LEFT JOIN LATERAL (
@@ -244,7 +273,7 @@ async function findOpenPosition(intent: LuxyIntent): Promise<OpenPositionRow | n
   if (intent.token) return null; // token specified but no match → never guess
 
   const fallback = await query<OpenPositionRow>(
-    `SELECT p.id, p.chain, p.token, p.size_usd, p.entry_price, p.intent,
+    `SELECT p.id, p.agent, p.chain, p.token, p.pool_id, p.size_usd, p.entry_price, p.intent,
             (s.raw_data->>'baseToken'->>'symbol') AS symbol
      FROM positions p
      LEFT JOIN LATERAL (
@@ -297,6 +326,21 @@ async function executeLiveClose(
   }
 
   // ---- LIVE close per venue ----
+  if (row.agent === 'lp' && row.chain === 'solana' && (intent.poolId || row.pool_id)) {
+    const poolId = intent.poolId ?? row.pool_id;
+    const intentFill = (row.intent as { fill?: { positionAddress?: string } } | null)?.fill;
+    const positionAddress = intentFill?.positionAddress;
+    if (!poolId || !positionAddress) {
+      throw new Error('live LP close: missing poolId or positionAddress on position intent');
+    }
+    const fill = await closeDlmmPosition({ poolId, positionAddress });
+    const pnlPct = estimateClosePnlPct(intent);
+    const pnlUsd = row.size_usd * pnlPct;
+    await markClosed(row, pnlUsd, null);
+    log.info({ fill }, 'LP position closed');
+    return { pnl_usd: pnlUsd, pnl_pct: pnlPct, symbol: row.symbol ?? undefined, token: row.token ?? undefined };
+  }
+
   if (row.chain === 'hyperliquid') {
     const coin = intent.market ?? row.token ?? undefined;
     if (!coin) throw new Error('live hyperliquid close: cannot resolve market');
